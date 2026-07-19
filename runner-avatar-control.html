@@ -2584,20 +2584,26 @@
       // Belfry opening, a bell recessed behind its arch, and a clock face.
       const bell = new THREE.Group();
       bell.position.set(0, 17.15, towerFront - .78);
-      const bellDome = new THREE.Mesh(
-        new THREE.SphereGeometry(.78, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2), bronze
-      );
-      bellDome.position.y = .04;
-      bell.add(bellDome);
-      const bellSkirt = new THREE.Mesh(
-        new THREE.CylinderGeometry(.60, .78, .62, 18, 1, false), bronze
-      );
-      bellSkirt.position.y = -.25;
-      bell.add(bellSkirt);
-      const bellRim = new THREE.Mesh(new THREE.TorusGeometry(.78, .1, 8, 18), bronze);
-      bellRim.rotation.x = Math.PI / 2;
-      bellRim.position.y = -.56;
-      bell.add(bellRim);
+      // A single hollow casting keeps the crown, skirt, and lip from reading
+      // as separate floating gold pieces, while still showing an open bell.
+      const bellProfile = [
+        new THREE.Vector2(0, .82),
+        new THREE.Vector2(.18, .76),
+        new THREE.Vector2(.48, .58),
+        new THREE.Vector2(.61, .28),
+        new THREE.Vector2(.70, -.22),
+        new THREE.Vector2(.80, -.48),
+        new THREE.Vector2(.80, -.58),
+        new THREE.Vector2(.70, -.64),
+        new THREE.Vector2(.64, -.54),
+        new THREE.Vector2(.62, -.18),
+        new THREE.Vector2(.53, .25),
+        new THREE.Vector2(.38, .55),
+        new THREE.Vector2(.12, .68),
+        new THREE.Vector2(0, .70)
+      ];
+      const bellBody = new THREE.Mesh(new THREE.LatheGeometry(bellProfile, 24), bronze);
+      bell.add(bellBody);
       const clapper = new THREE.Mesh(new THREE.SphereGeometry(.13, 10, 8), black);
       clapper.position.y = -.84;
       bell.add(clapper);
@@ -3212,7 +3218,7 @@
     const FARM_SPOTS = [[-62, 96], [-132, 104], [26, 122]];
     FARM_VARIANTS.forEach((opts, i) => placeFarm(FARM_SPOTS[i][0], FARM_SPOTS[i][1], opts));
 
-    // --- Corner units: ten models for street junctions ------------------------
+    // --- Normal town blocks --------------------------------------------------
     const CORNER_VARIANTS = [
       { width: 10, depth: 10, chamfer: 3.0, storeys: 2, shopfront: true,
         paint: 0x2f4a35, roof: 0x4d4a4e, lamp: true },
@@ -3235,7 +3241,17 @@
         parapet: true, roof: 0x3a3a3e, lamp: true }
     ];
     CORNER_VARIANTS.forEach((opts, i) => {
-      placeBuilding(createCornerUnit(opts), -85 + i * 19, -70, -Math.PI / 4);
+      const normalBlock = createHouse({
+        width: opts.width,
+        depth: opts.depth,
+        eave: opts.storeys === 3 ? 8.3 : 5.9,
+        rise: opts.rise || (opts.storeys === 3 ? 3.2 : 2.7),
+        plaster: opts.plaster,
+        roof: opts.roof,
+        trim: opts.paint,
+        shutters: !!opts.shopfront
+      });
+      placeBuilding(normalBlock, -85 + i * 19, -70);
     });
 
     const runner = createUnit(0xd4956a);
