@@ -2533,6 +2533,11 @@
       // Tower overlaps the front porch. Its lower arch remains open, while the
       // bell stage and spire carry the landmark high above the other buildings.
       const TW = 5.5, TD = 4.8, towerZ = D / 2 + TD / 2 - .15, towerFront = towerZ + TD / 2;
+      const naveFront = D / 2 - T / 2;
+      // Stone flags span the tower vestibule, replacing the exposed grass
+      // between the open outer door and the nave's oak floor.
+      block(TW - .18, .12, towerFront - naveFront + .32, 0, .06,
+        (towerFront + naveFront) / 2, darkStone);
       frontPortal(towerFront, TW, 13.8);
       block(.46, 13.8, TD, -TW / 2 + .23, 6.9, towerZ);
       block(.46, 13.8, TD, TW / 2 - .23, 6.9, towerZ);
@@ -2558,7 +2563,6 @@
       const bellDome = new THREE.Mesh(
         new THREE.SphereGeometry(.78, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2), bronze
       );
-      bellDome.rotation.x = Math.PI;
       bell.add(bellDome);
       const bellRim = new THREE.Mesh(new THREE.TorusGeometry(.78, .1, 8, 18), bronze);
       bellRim.rotation.x = Math.PI / 2;
@@ -2567,16 +2571,20 @@
       clapper.position.y = -.72;
       bell.add(clapper);
       church.add(bell);
-      cylinder(.12, .12, 2.4, 0, 19.4, towerFront - .78, black, 8);
+      // The crown is hung from a visible iron rod and oak yoke, rather than
+      // floating inside the opening.
+      cylinder(.08, .08, 2.9, 0, 19.35, towerFront - .78, black, 8);
+      block(2.35, .18, .26, 0, 20.82, towerFront - .78, oak);
+      const CLOCK_Y = 10.8;
       const face = new THREE.Mesh(
         new THREE.CircleGeometry(.88, 24),
         new THREE.MeshPhongMaterial({ color: 0xe7e1cd, shininess: 18 })
       );
-      face.position.set(0, 14.8, towerFront + .04);
+      face.position.set(0, CLOCK_Y, towerFront + .04);
       church.add(face);
       for (const angle of [0, Math.PI * .65]) {
         const hand = new THREE.Mesh(new THREE.BoxGeometry(.07, .48, .04), black);
-        hand.position.set(Math.sin(angle) * .2, 14.8 + Math.cos(angle) * .2, towerFront + .08);
+        hand.position.set(Math.sin(angle) * .2, CLOCK_Y + Math.cos(angle) * .2, towerFront + .08);
         hand.rotation.z = -angle;
         church.add(hand);
       }
