@@ -1,0 +1,3443 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Runner Avatar Control</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #11151c;
+      --fg: #edf2f4;
+      --muted: #a8b5bf;
+      --panel: rgba(13, 16, 22, 0.78);
+      --line: rgba(237, 242, 244, 0.18);
+      --gold: #ffd166;
+      --green: #6ee7a8;
+      --blue: #70b7ff;
+      --red: #ff6b7a;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    .hud {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      width: min(380px, calc(100vw - 32px));
+      display: grid;
+      gap: 10px;
+      pointer-events: none;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      backdrop-filter: blur(14px);
+      border-radius: 8px;
+      box-shadow: 0 20px 45px rgba(0, 0, 0, 0.24);
+      padding: 12px 14px;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1px;
+      overflow: hidden;
+      padding: 0;
+    }
+
+    .stat {
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.025);
+    }
+
+    .label {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .value {
+      margin-top: 3px;
+      font-size: 20px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .bar {
+      height: 12px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .fill {
+      width: 100%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--green), var(--gold));
+      transition: width 0.08s linear;
+    }
+
+    .crosshair {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      width: 26px;
+      height: 26px;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+    }
+
+    .crosshair span {
+      position: absolute;
+      background: rgba(255, 240, 160, 0.9);
+      box-shadow: 0 0 3px rgba(0, 0, 0, 0.8);
+    }
+
+    .crosshair .h { top: 50%; height: 1.5px; width: 9px; margin-top: -0.75px; }
+    .crosshair .h.l { left: 0; }
+    .crosshair .h.r { right: 0; }
+    .crosshair .v { left: 50%; width: 1.5px; height: 9px; margin-left: -0.75px; }
+    .crosshair .v.t { top: 0; }
+    .crosshair .v.b { bottom: 0; }
+
+    .controls {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      max-width: min(450px, calc(100vw - 32px));
+      color: #d7e0e6;
+      line-height: 1.45;
+      pointer-events: none;
+    }
+
+    .keys {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    kbd {
+      display: inline-flex;
+      min-width: 28px;
+      height: 26px;
+      align-items: center;
+      justify-content: center;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-bottom-color: rgba(237, 242, 244, 0.34);
+      border-radius: 6px;
+      background: rgba(237, 242, 244, 0.08);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+  </style>
+  <!-- Resolves the bare specifier "three" to a CDN build so the page works
+       when opened directly from disk (file://). If you want to go back to a
+       local copy, change the URL below to "./vendor/three.module.js" AND
+       serve the folder over http (e.g. `npx serve` or `python -m http.server`). -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div class="hud">
+    <div class="panel stats">
+      <div class="stat">
+        <div class="label">Speed</div>
+        <div class="value"><span id="speed">0.00</span> m/s</div>
+      </div>
+      <div class="stat">
+        <div class="label">Mode</div>
+        <div class="value" id="mode">Idle</div>
+      </div>
+      <div class="stat">
+        <div class="label">Distance</div>
+        <div class="value"><span id="distance">0.0</span> m</div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="label">Sprint Stamina</div>
+      <div class="bar" aria-hidden="true"><div id="staminaFill" class="fill"></div></div>
+      <div class="note">March pace: 3.00 m/s. Sprint target: 7.50 m/s.</div>
+    </div>
+  </div>
+
+  <div class="crosshair" aria-hidden="true">
+    <span class="h l"></span><span class="h r"></span>
+    <span class="v t"></span><span class="v b"></span>
+  </div>
+
+  <div class="panel controls">
+    <div>Control the avatar with accurate meter-per-second movement.</div>
+    <div class="keys">
+        <kbd>W</kbd><kbd>Up</kbd><span>forward</span>
+        <kbd>S</kbd><kbd>Down</kbd><span>back</span>
+        <kbd>A</kbd><kbd>Left</kbd><span>turn left</span>
+        <kbd>D</kbd><kbd>Right</kbd><span>turn right</span>
+        <kbd>Shift</kbd><span>sprint</span>
+        <kbd>E</kbd><span>crouch / mount ladder</span>
+        <kbd>W</kbd><kbd>S</kbd><span>climb up / down</span>
+        <kbd>Drag</kbd><span>orbit camera</span>
+        <kbd>Wheel</kbd><span>zoom</span>
+        <kbd>C</kbd><span>snap behind</span>
+        <kbd>F</kbd><span>toggle chase cam</span>
+        <kbd>V</kbd><span>first-person view</span>
+        <kbd>Mouse</kbd><span>turn &amp; aim (in first-person)</span>
+        <kbd>Click</kbd><span>fire</span>
+        <kbd>Space</kbd><span>fire</span>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from "three";
+
+    const WALK_SPEED = 3.0;
+    const BACKPEDAL_SPEED = 0.95;
+    const SPRINT_SPEED = 7.5;
+    const MARCH_GAIT_CYCLES = 1.35;
+    const SPRINT_GAIT_CYCLES = 2.65;
+    const SPRINT_SECONDS = 8;
+    const STAMINA_RECOVER_SECONDS = 6;
+    const UNIT_SCALE = 0.1991;
+    const UNIT_Y_OFFSET = 0.207;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x7fb2da);
+    scene.fog = new THREE.Fog(0x7fb2da, 90, 330);
+
+    const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 420);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.52);
+    scene.add(ambient);
+    const sun = new THREE.DirectionalLight(0xfff0d4, 1.3);
+    sun.position.set(35, 50, 26);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    // The shadow frustum is a fixed-size box that RIDES WITH THE PLAYER rather
+    // than sitting at the origin — a static box can never cover a 340 m world.
+    const SHADOW_HALF = 55;
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = 210;
+    sun.shadow.camera.left = -SHADOW_HALF;
+    sun.shadow.camera.right = SHADOW_HALF;
+    sun.shadow.camera.top = SHADOW_HALF;
+    sun.shadow.camera.bottom = -SHADOW_HALF;
+    sun.shadow.bias = -0.0006;
+    sun.shadow.normalBias = 0.02;
+    sun.shadow.camera.updateProjectionMatrix();
+    scene.add(sun);
+    scene.add(sun.target);
+
+    const SUN_OFFSET = new THREE.Vector3(52, 74, 39);
+
+    function updateSun() {
+      sun.position.set(
+        runner.position.x + SUN_OFFSET.x,
+        SUN_OFFSET.y,
+        runner.position.z + SUN_OFFSET.z
+      );
+      sun.target.position.set(runner.position.x, 0, runner.position.z);
+      sun.target.updateMatrixWorld();
+    }
+
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(340, 340),
+      new THREE.MeshStandardMaterial({ color: 0x4c7f3e, roughness: 0.85 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // (debug grid removed — it read as a sports pitch under the village)
+
+    for (let i = -80; i <= 80; i += 10) {
+      const marker = new THREE.Mesh(
+        new THREE.BoxGeometry(0.08, 0.04, 2.6),
+        new THREE.MeshStandardMaterial({ color: i === 0 ? 0xffd166 : 0xe6eef2, roughness: 0.55 })
+      );
+      marker.position.set(i, 0.03, -8);
+      marker.receiveShadow = true;
+      scene.add(marker);
+    }
+
+    // --- Village building ------------------------------------------------
+    // Dimensions are real metres, checked against the 1.84 m soldier: 8 x 10 m
+    // footprint, 5.6 m to the eaves, 8.2 m to the ridge, 33 degree roof pitch.
+    const brickMat = new THREE.MeshPhongMaterial({ color: 0x8d5b46, shininess: 3, side: THREE.DoubleSide });
+    const plasterMat = new THREE.MeshPhongMaterial({ color: 0xa8917a, shininess: 3, side: THREE.DoubleSide });
+    const roofMat = new THREE.MeshPhongMaterial({ color: 0x59453d, shininess: 6 });
+    const stoneMat = new THREE.MeshPhongMaterial({ color: 0x6f6a63, shininess: 4 });
+    const timberMat = new THREE.MeshPhongMaterial({ color: 0x3d3227, shininess: 8 });
+    // Real glass: mostly transparent so you see into the room, with a sheen.
+    const glassMat = new THREE.MeshPhongMaterial({
+      color: 0x6d9fcc,
+      shininess: 130,
+      transparent: true,
+      opacity: 0.3,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+    const brassMat = new THREE.MeshPhongMaterial({ color: 0xb08d3f, shininess: 110 });
+    const interiorMat = new THREE.MeshPhongMaterial({ color: 0x241f1b, shininess: 2 });
+
+    function rectPath(x0, y0, x1, y1) {
+      const path = new THREE.Path();
+      path.moveTo(x0, y0);
+      path.lineTo(x1, y0);
+      path.lineTo(x1, y1);
+      path.lineTo(x0, y1);
+      path.closePath();
+      return path;
+    }
+
+    // Window joinery: frame ring, glazing bars, and a pane of glass, recessed
+    // into the wall reveal so the opening reads as having real depth.
+    // o.barsV / o.barsH override the default six-pane grid for shopfronts.
+    function glazing(o, T, frameMat) {
+      const g = new THREE.Group();
+      const F = 0.09;
+      const mat = frameMat || timberMat;
+
+      const outer = new THREE.Shape();
+      outer.moveTo(-o.w / 2 - F, -o.h / 2 - F);
+      outer.lineTo(o.w / 2 + F, -o.h / 2 - F);
+      outer.lineTo(o.w / 2 + F, o.h / 2 + F);
+      outer.lineTo(-o.w / 2 - F, o.h / 2 + F);
+      outer.closePath();
+      outer.holes.push(rectPath(-o.w / 2, -o.h / 2, o.w / 2, o.h / 2));
+      const frame = new THREE.Mesh(
+        new THREE.ExtrudeGeometry(outer, { depth: 0.1, bevelEnabled: false }),
+        mat
+      );
+      frame.position.z = T / 2 - 0.11;
+      g.add(frame);
+
+      const bar = 0.045;
+      const nV = o.barsV === undefined ? 1 : o.barsV;
+      const nH = o.barsH === undefined ? 2 : o.barsH;
+      for (let i = 1; i <= nV; i++) {
+        const mullion = new THREE.Mesh(new THREE.BoxGeometry(bar, o.h, 0.05), mat);
+        mullion.position.set(o.w * (i / (nV + 1) - 0.5), 0, T / 2 - 0.14);
+        g.add(mullion);
+      }
+      for (let i = 1; i <= nH; i++) {
+        const transom = new THREE.Mesh(new THREE.BoxGeometry(o.w, bar, 0.05), mat);
+        transom.position.set(0, o.h * (i / (nH + 1) - 0.5), T / 2 - 0.14);
+        g.add(transom);
+      }
+
+      const pane = new THREE.Mesh(new THREE.PlaneGeometry(o.w, o.h), glassMat);
+      pane.position.z = T / 2 - 0.16;
+      g.add(pane);
+      return g;
+    }
+
+    function doorway(o, T, leafMat) {
+      const g = new THREE.Group();
+      const mat = leafMat || timberMat;
+      const leaf = new THREE.Mesh(new THREE.BoxGeometry(o.w - 0.04, o.h - 0.04, 0.07), mat);
+      leaf.position.z = T / 2 - 0.09;
+      g.add(leaf);
+      for (const yy of [-o.h / 4, o.h / 4]) {
+        const panel = new THREE.Mesh(
+          new THREE.BoxGeometry(o.w - 0.34, o.h / 2 - 0.26, 0.03),
+          mat
+        );
+        panel.position.set(0, yy, T / 2 - 0.04);
+        g.add(panel);
+      }
+      const knob = new THREE.Mesh(new THREE.SphereGeometry(0.055, 12, 10), brassMat);
+      knob.position.set(o.w / 2 - 0.17, -0.02, T / 2 - 0.02);
+      g.add(knob);
+      const plate = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.2, 0.02), brassMat);
+      plate.position.set(o.w / 2 - 0.17, -0.24, T / 2 - 0.05);
+      g.add(plate);
+      return g;
+    }
+
+    function buildWall(span, height, openings, mat, T, joineryMat) {
+      const group = new THREE.Group();
+      const shape = new THREE.Shape();
+      shape.moveTo(-span / 2, 0);
+      shape.lineTo(span / 2, 0);
+      shape.lineTo(span / 2, height);
+      shape.lineTo(-span / 2, height);
+      shape.closePath();
+      for (const o of openings) {
+        shape.holes.push(rectPath(o.x - o.w / 2, o.sill, o.x + o.w / 2, o.sill + o.h));
+      }
+      const geo = new THREE.ExtrudeGeometry(shape, { depth: T, bevelEnabled: false });
+      geo.translate(0, 0, -T / 2);
+      group.add(new THREE.Mesh(geo, mat));
+
+      for (const o of openings) {
+        if (o.empty) continue; // a hole and nothing else — barn doors, vents
+        const piece = o.door ? doorway(o, T, joineryMat) : glazing(o, T, joineryMat);
+        piece.position.set(o.x, o.sill + o.h / 2, 0);
+        group.add(piece);
+        if (!o.door) {
+          const sill = new THREE.Mesh(
+            new THREE.BoxGeometry(o.w + 0.34, 0.1, T + 0.16),
+            stoneMat
+          );
+          sill.position.set(o.x, o.sill - 0.05, 0.02);
+          group.add(sill);
+        }
+      }
+      return group;
+    }
+
+    // --- Village shop -------------------------------------------------------
+    // Narrow frontage, tall ground floor with a display window and stallriser,
+    // painted fascia sign, striped awning, living quarters over. 6.5 x 9 m.
+    function createShop(opts = {}) {
+      const W = opts.width || 6.5;
+      const D = opts.depth || 9;
+      const GROUND = opts.cafe ? 3.45 : 3.2; // taller again for a café
+      const UPPER = 2.8;
+      const EAVE = GROUND + UPPER;
+      const RISE = 2.0;
+      const T = 0.34;
+
+      const wallMat = opts.plaster ? plasterMat : brickMat;
+      const paintMat = new THREE.MeshPhongMaterial({ color: opts.paint, shininess: 26 });
+      const awningMat = new THREE.MeshPhongMaterial({ color: opts.awning, shininess: 6 });
+      const awningAltMat = new THREE.MeshPhongMaterial({ color: 0xe4dcc6, shininess: 6 });
+      const shopRoofMat = new THREE.MeshPhongMaterial({ color: opts.roof, shininess: 6 });
+
+      const shop = new THREE.Group();
+
+      const plinth = new THREE.Mesh(new THREE.BoxGeometry(W + 0.3, 0.45, D + 0.3), stoneMat);
+      plinth.position.y = 0.225;
+      shop.add(plinth);
+
+      // Frontage: display window sits on a stallriser, door beside it.
+      const DISP_W = 3.3;
+      const DISP_H = 2.05;
+      const STALL = 0.72;
+      // A café's frontage is symmetrical: two big windows either side of a
+      // central door, unlike a shop's single offset display window.
+      const frontOpenings = opts.cafe
+        ? [
+            { x: -W / 2 + 2.2, w: 2.4, h: 2.15, sill: 0.6, barsV: 2, barsH: 1 },
+            { x: W / 2 - 2.2, w: 2.4, h: 2.15, sill: 0.6, barsV: 2, barsH: 1 },
+            { x: 0, w: 1.25, h: 2.25, sill: 0, door: true },
+            { x: -W / 2 + 1.7, w: 1.0, h: 1.3, sill: GROUND + 0.85 },
+            { x: 0, w: 1.0, h: 1.3, sill: GROUND + 0.85 },
+            { x: W / 2 - 1.7, w: 1.0, h: 1.3, sill: GROUND + 0.85 }
+          ]
+        : [
+            { x: -0.85, w: DISP_W, h: DISP_H, sill: STALL, barsV: 3, barsH: 1 },
+            { x: 1.95, w: 1.05, h: 2.15, sill: 0, door: true },
+            { x: -1.55, w: 1.0, h: 1.3, sill: GROUND + 0.85 },
+            { x: 1.55, w: 1.0, h: 1.3, sill: GROUND + 0.85 }
+          ];
+      const backOpenings = [
+        { x: 0, w: 1.05, h: 2.05, sill: 0, door: true },
+        { x: -1.7, w: 1.0, h: 1.3, sill: GROUND + 0.85 },
+        { x: 1.7, w: 1.0, h: 1.3, sill: GROUND + 0.85 }
+      ];
+      const sideOpenings = [
+        { x: -2.2, w: 1.0, h: 1.3, sill: GROUND + 0.85 },
+        { x: 2.2, w: 1.0, h: 1.3, sill: GROUND + 0.85 },
+        { x: 2.2, w: 0.9, h: 1.15, sill: 1.15 }
+      ];
+
+      const front = buildWall(W, EAVE, frontOpenings, wallMat, T, paintMat);
+      front.position.set(0, 0.45, D / 2 - T / 2);
+      shop.add(front);
+
+      const back = buildWall(W, EAVE, backOpenings, wallMat, T);
+      back.position.set(0, 0.45, -(D / 2 - T / 2));
+      back.rotation.y = Math.PI;
+      shop.add(back);
+
+      for (const side of [-1, 1]) {
+        const wall = buildWall(D - 2 * T, EAVE, sideOpenings, wallMat, T);
+        wall.position.set(side * (W / 2 - T / 2), 0.45, 0);
+        wall.rotation.y = (side * Math.PI) / 2;
+        shop.add(wall);
+      }
+
+      // Painted stallriser board under the display window.
+      if (!opts.cafe) {
+        const stall = new THREE.Mesh(
+          new THREE.BoxGeometry(DISP_W + 0.24, STALL - 0.06, 0.06),
+          paintMat
+        );
+        stall.position.set(-0.85, 0.45 + (STALL - 0.06) / 2, D / 2 + 0.02);
+        shop.add(stall);
+      }
+
+      // Fascia sign board across the frontage, with a lighter inset panel.
+      const fascia = new THREE.Mesh(new THREE.BoxGeometry(W - 0.2, 0.62, 0.16), paintMat);
+      fascia.position.set(0, 0.45 + GROUND - 0.05, D / 2 + 0.06);
+      shop.add(fascia);
+      const inset = new THREE.Mesh(new THREE.BoxGeometry(W - 0.9, 0.3, 0.04), awningAltMat);
+      inset.position.set(0, 0.45 + GROUND - 0.05, D / 2 + 0.15);
+      shop.add(inset);
+
+      // Striped awning over the shopfront, tilted down and out.
+      const awning = new THREE.Group();
+      const PROJ = opts.awningProj || 1.35;
+      const stripes = 9;
+      for (let i = 0; i < stripes; i++) {
+        const w = (W - 0.5) / stripes;
+        const strip = new THREE.Mesh(
+          new THREE.BoxGeometry(w, 0.05, PROJ),
+          i % 2 ? awningAltMat : awningMat
+        );
+        strip.position.set(-(W - 0.5) / 2 + w * (i + 0.5), 0, 0);
+        awning.add(strip);
+      }
+      const valance = new THREE.Mesh(new THREE.BoxGeometry(W - 0.5, 0.26, 0.05), awningMat);
+      valance.position.set(0, -0.14, PROJ / 2);
+      awning.add(valance);
+      awning.position.set(0, 0.45 + GROUND - 0.5, D / 2 + PROJ / 2 - 0.05);
+      awning.rotation.x = 0.22;
+      shop.add(awning);
+
+      // Gable + roof, same construction as the house.
+      const gable = new THREE.Shape();
+      gable.moveTo(-W / 2, 0);
+      gable.lineTo(W / 2, 0);
+      gable.lineTo(0, RISE);
+      gable.closePath();
+      const gableGeo = new THREE.ExtrudeGeometry(gable, { depth: D, bevelEnabled: false });
+      gableGeo.translate(0, 0, -D / 2);
+      const gableMesh = new THREE.Mesh(gableGeo, wallMat);
+      gableMesh.position.y = 0.45 + EAVE;
+      shop.add(gableMesh);
+
+      const run = W / 2;
+      const slope = Math.hypot(run, RISE);
+      const pitch = Math.atan2(RISE, run);
+      const OVER = 0.45;
+      const TH = 0.18;
+      const slabGeo = new THREE.BoxGeometry(slope + OVER, TH, D + 0.7);
+      const offX = (run / slope) * (OVER / 2) + (RISE / slope) * (TH / 2);
+      const offY = -(RISE / slope) * (OVER / 2) + (run / slope) * (TH / 2);
+      for (const side of [-1, 1]) {
+        const slab = new THREE.Mesh(slabGeo, shopRoofMat);
+        slab.position.x = side * (run / 2 + offX);
+        slab.position.y = 0.45 + EAVE + RISE / 2 + offY;
+        slab.rotation.z = -side * pitch;
+        shop.add(slab);
+      }
+      const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.2, D + 0.7), shopRoofMat);
+      ridge.position.y = 0.45 + EAVE + RISE + 0.06;
+      shop.add(ridge);
+
+      const chTop = 0.45 + EAVE + RISE + 1.1;
+      const chBase = 0.45 + EAVE - 1.0;
+      const stack = new THREE.Mesh(new THREE.BoxGeometry(0.85, chTop - chBase, 0.85), brickMat);
+      stack.position.set(W / 2 - 1.2, (chTop + chBase) / 2, -D / 2 + 1.6);
+      shop.add(stack);
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.22, 1.1), stoneMat);
+      cap.position.set(stack.position.x, chTop + 0.11, stack.position.z);
+      shop.add(cap);
+
+      // Shutters flanking the upper windows.
+      if (opts.shutters) {
+        for (const x of [-1.55, 1.55]) {
+          for (const s2 of [-1, 1]) {
+            const sh = new THREE.Mesh(new THREE.BoxGeometry(0.42, 1.3, 0.06), paintMat);
+            sh.position.set(x + s2 * 0.73, 0.45 + GROUND + 0.85 + 0.65, D / 2 + 0.03);
+            shop.add(sh);
+          }
+        }
+      }
+
+      // Café-tabac extras: the red lozenge sign above the door, and pavement
+      // tables. A café is a shop that has colonised the street outside it.
+      if (opts.cafe) {
+        const tabacMat = new THREE.MeshPhongMaterial({ color: 0xc0342b, shininess: 40 });
+        const lozenge = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.14, 4), tabacMat);
+        lozenge.rotation.x = Math.PI / 2;
+        lozenge.position.set(W / 2 - 1.1, 0.45 + 2.9, D / 2 + 0.32);
+        shop.add(lozenge);
+        const bracket = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.34), timberMat);
+        bracket.position.set(W / 2 - 1.1, 0.45 + 2.9, D / 2 + 0.14);
+        shop.add(bracket);
+
+        // Low railing and planters fencing off the pavement terrace.
+        const railMat = new THREE.MeshPhongMaterial({ color: opts.rail || 0x394034, shininess: 20 });
+        const TERR = opts.terraceDepth || 3.0;
+        const zFar = D / 2 + TERR;
+        for (let i = 0; i <= 6; i++) {
+          const post = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.62, 0.07), railMat);
+          post.position.set(-W / 2 + (W / 6) * i, 0.31, zFar);
+          shop.add(post);
+        }
+        const rail = new THREE.Mesh(new THREE.BoxGeometry(W, 0.06, 0.06), railMat);
+        rail.position.set(0, 0.6, zFar);
+        shop.add(rail);
+        for (const sd of [-1, 1]) {
+          const sideRail = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, TERR), railMat);
+          sideRail.position.set(sd * (W / 2), 0.6, D / 2 + TERR / 2);
+          shop.add(sideRail);
+          const planter = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.5, 0.7), stoneMat);
+          planter.position.set(sd * (W / 2 - 0.45), 0.25, zFar - 0.5);
+          shop.add(planter);
+          const shrub = new THREE.Mesh(
+            new THREE.SphereGeometry(0.36, 10, 8),
+            new THREE.MeshPhongMaterial({ color: 0x3f5a33, shininess: 4 })
+          );
+          shrub.position.set(sd * (W / 2 - 0.45), 0.68, zFar - 0.5);
+          shop.add(shrub);
+        }
+
+        // Chalkboard A-board by the door.
+        const board = new THREE.Group();
+        for (const sd of [-1, 1]) {
+          const leaf2 = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.95, 0.04),
+            new THREE.MeshPhongMaterial({ color: 0x22201d, shininess: 6 }));
+          leaf2.position.set(0, 0.5, sd * 0.11);
+          leaf2.rotation.x = sd * 0.16;
+          board.add(leaf2);
+        }
+        board.position.set(-W / 2 + 1.0, 0, D / 2 + 1.1);
+        board.rotation.y = 0.4;
+        shop.add(board);
+
+        const tableMat = new THREE.MeshPhongMaterial({ color: 0x50442f, shininess: 18 });
+        const chairMat = new THREE.MeshPhongMaterial({ color: 0x2f3a2c, shininess: 18 });
+        const tableCount = opts.tables === undefined ? 3 : opts.tables;
+        for (let i = 0; i < tableCount; i++) {
+          const set = new THREE.Group();
+          const top = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.05, 12), tableMat);
+          top.position.y = 0.72;
+          set.add(top);
+          const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.09, 0.72, 8), tableMat);
+          pedestal.position.y = 0.36;
+          set.add(pedestal);
+          for (const sd of [-1, 1]) {
+            const seat = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.05, 0.38), chairMat);
+            seat.position.set(sd * 0.62, 0.44, 0);
+            set.add(seat);
+            const backRest = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.42, 0.38), chairMat);
+            backRest.position.set(sd * 0.79, 0.65, 0);
+            set.add(backRest);
+            const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.44, 0.08), chairMat);
+            post.position.set(sd * 0.62, 0.22, 0);
+            set.add(post);
+          }
+          const spread = (W - 2.2) / Math.max(1, tableCount - 1);
+          set.position.set(-(W - 2.2) / 2 + i * spread, 0, D / 2 + 1.75);
+          set.rotation.y = 0.35 - i * 0.28;
+          shop.add(set);
+        }
+      }
+
+      const floor = new THREE.Mesh(
+        new THREE.BoxGeometry(W - 2 * T, 0.1, D - 2 * T),
+        interiorMat
+      );
+      floor.position.y = 0.5;
+      shop.add(floor);
+      const ceiling = new THREE.Mesh(
+        new THREE.BoxGeometry(W - 2 * T, 0.1, D - 2 * T),
+        interiorMat
+      );
+      ceiling.position.y = 0.45 + EAVE - 0.05;
+      shop.add(ceiling);
+
+      shop.traverse((node) => {
+        if (node.isMesh) {
+          node.castShadow = true;
+          node.receiveShadow = true;
+        }
+      });
+      shop.userData.footprint = { w: W, d: D, h: 0.45 + EAVE + RISE };
+      return shop;
+    }
+
+    // --- Terraced row -------------------------------------------------------
+    // Gable-fronted units sharing party walls: no side windows except at the two
+    // ends of the row. Each unit gets its own width, height, materials and paint
+    // so the row reads as separate buildings that grew together, not one block.
+    // --- Collision -----------------------------------------------------------
+    // Buildings are axis-aligned boxes. Rotated footprints are widened into the
+    // enclosing AABB, which is conservative but cheap and good enough for cover.
+    const colliders = [];
+    // Declared here, not with the player state, because placeBuilding() runs
+    // during scene construction — well before the state block is evaluated.
+    const ladders = [];
+
+    function placeBuilding(group, x, z, rotY = 0) {
+      group.position.set(x, 0, z);
+      group.rotation.y = rotY;
+      scene.add(group);
+      // A building can declare individual wall boxes instead of one solid
+      // footprint — that is what lets the player walk inside it.
+      const lad = group.userData.ladder;
+      if (lad) {
+        const cs = Math.cos(rotY);
+        const sn = Math.sin(rotY);
+        ladders.push({
+          x: x + lad.localX * cs + lad.localZ * sn,
+          z: z - lad.localX * sn + lad.localZ * cs,
+          centreX: x,
+          centreZ: z,
+          bottomY: lad.bottomY,
+          topY: lad.topY,
+          deckR: lad.deckR,
+          tankR: lad.tankR
+        });
+      }
+
+      const boxes = group.userData.colliderBoxes;
+      if (boxes) {
+        const cs = Math.cos(rotY);
+        const sn = Math.sin(rotY);
+        for (const b of boxes) {
+          const wx = x + b.x * cs + b.z * sn;
+          const wz = z - b.x * sn + b.z * cs;
+          const hx = (Math.abs(cs) * b.w) / 2 + (Math.abs(sn) * b.d) / 2;
+          const hz = (Math.abs(sn) * b.w) / 2 + (Math.abs(cs) * b.d) / 2;
+          colliders.push({
+            minX: wx - hx, maxX: wx + hx,
+            minZ: wz - hz, maxZ: wz + hz,
+            maxY: b.h
+          });
+        }
+        return group;
+      }
+
+      const fp = group.userData.footprint;
+      if (fp) {
+        const c = Math.abs(Math.cos(rotY));
+        const sn = Math.abs(Math.sin(rotY));
+        const hx = (c * fp.w) / 2 + (sn * fp.d) / 2;
+        const hz = (sn * fp.w) / 2 + (c * fp.d) / 2;
+        colliders.push({
+          minX: x - hx, maxX: x + hx,
+          minZ: z - hz, maxZ: z + hz,
+          maxY: fp.h
+        });
+      }
+      return group;
+    }
+
+    const PLAYER_RADIUS = 0.45;
+
+    // Push the runner out along whichever axis he is least deep into.
+    function resolveCollisions() {
+      const p = runner.position;
+      const r = PLAYER_RADIUS;
+      for (const c of colliders) {
+        if (p.x + r <= c.minX || p.x - r >= c.maxX) continue;
+        if (p.z + r <= c.minZ || p.z - r >= c.maxZ) continue;
+        const dLeft = p.x + r - c.minX;
+        const dRight = c.maxX - (p.x - r);
+        const dNear = p.z + r - c.minZ;
+        const dFar = c.maxZ - (p.z - r);
+        const m = Math.min(dLeft, dRight, dNear, dFar);
+        if (m === dLeft) p.x = c.minX - r;
+        else if (m === dRight) p.x = c.maxX + r;
+        else if (m === dNear) p.z = c.minZ - r;
+        else p.z = c.maxZ + r;
+      }
+    }
+
+    // Slab-method ray/box test, so a round travelling 14 m in a frame cannot
+    // tunnel straight through a wall the way a point test would allow.
+    function segmentHit(ox, oy, oz, dx, dy, dz, maxDist) {
+      let best = -1;
+      for (const c of colliders) {
+        let tmin = 0;
+        let tmax = maxDist;
+        const lo = [c.minX, 0, c.minZ];
+        const hi = [c.maxX, c.maxY, c.maxZ];
+        const o = [ox, oy, oz];
+        const d = [dx, dy, dz];
+        let miss = false;
+        for (let a = 0; a < 3; a++) {
+          if (Math.abs(d[a]) < 1e-8) {
+            if (o[a] < lo[a] || o[a] > hi[a]) { miss = true; break; }
+          } else {
+            let t1 = (lo[a] - o[a]) / d[a];
+            let t2 = (hi[a] - o[a]) / d[a];
+            if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+            if (t1 > tmin) tmin = t1;
+            if (t2 < tmax) tmax = t2;
+            if (tmin > tmax) { miss = true; break; }
+          }
+        }
+        if (!miss && (best < 0 || tmin < best)) best = tmin;
+      }
+      return best;
+    }
+
+    // --- Landscape props -----------------------------------------------------
+    const barkMat = new THREE.MeshPhongMaterial({ color: 0x4a3a2a, shininess: 4 });
+    const leafMat = new THREE.MeshPhongMaterial({ color: 0x3d6b32, shininess: 4 });
+    const leafMat2 = new THREE.MeshPhongMaterial({ color: 0x4a7a37, shininess: 4 });
+    const hedgeMat = new THREE.MeshPhongMaterial({ color: 0x35592c, shininess: 3 });
+    const ironMat = new THREE.MeshPhongMaterial({ color: 0x24282a, shininess: 40 });
+    const paveMat = new THREE.MeshPhongMaterial({ color: 0x8e8878, shininess: 5 });
+    const civicMat = new THREE.MeshPhongMaterial({
+      color: 0xc4b9a2, shininess: 6, side: THREE.DoubleSide
+    });
+
+    function createTree(scale = 1) {
+      const tree = new THREE.Group();
+      const h = 4.2 * scale;
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.16 * scale, 0.26 * scale, h, 8), barkMat);
+      trunk.position.y = h / 2;
+      tree.add(trunk);
+      const blobs = [
+        [0, h + 0.9 * scale, 0, 1.5],
+        [0.8 * scale, h + 0.25 * scale, 0.3 * scale, 1.1],
+        [-0.7 * scale, h + 0.45 * scale, -0.5 * scale, 1.2],
+        [0.2 * scale, h + 1.8 * scale, -0.3 * scale, 1.0]
+      ];
+      blobs.forEach(([x, y, z, r], i) => {
+        const foliage = new THREE.Mesh(
+          new THREE.SphereGeometry(r * scale, 10, 8),
+          i % 2 ? leafMat2 : leafMat
+        );
+        foliage.position.set(x, y, z);
+        tree.add(foliage);
+      });
+      tree.traverse((n) => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+      return tree;
+    }
+
+    function createBush(r = 0.8) {
+      const bush = new THREE.Group();
+      for (let i = 0; i < 3; i++) {
+        const lump = new THREE.Mesh(new THREE.SphereGeometry(r * (0.7 + i * 0.16), 9, 7), hedgeMat);
+        lump.position.set((i - 1) * r * 0.55, r * 0.5, (i % 2) * r * 0.3);
+        bush.add(lump);
+      }
+      bush.traverse((n) => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+      return bush;
+    }
+
+    // Iron railings on stone piers, with a gap left for the gate.
+    function createFenceRun(length, gateWidth = 0) {
+      const run = new THREE.Group();
+      const PIER = 2.6;
+      const piers = Math.max(2, Math.round(length / PIER));
+      for (let i = 0; i <= piers; i++) {
+        const x = -length / 2 + (length / piers) * i;
+        if (gateWidth && Math.abs(x) < gateWidth / 2 - 0.1) continue;
+        const pier = new THREE.Mesh(new THREE.BoxGeometry(0.34, 1.5, 0.34), stoneMat);
+        pier.position.set(x, 0.75, 0);
+        run.add(pier);
+        const cap = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.12, 0.46), stoneMat);
+        cap.position.set(x, 1.56, 0);
+        run.add(cap);
+      }
+      const bars = Math.round(length / 0.32);
+      for (let i = 0; i <= bars; i++) {
+        const x = -length / 2 + (length / bars) * i;
+        if (gateWidth && Math.abs(x) < gateWidth / 2) continue;
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.3, 0.05), ironMat);
+        bar.position.set(x, 0.65, 0);
+        run.add(bar);
+        if (i % 4 === 0) {
+          const tip = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.18, 6), ironMat);
+          tip.position.set(x, 1.39, 0);
+          run.add(tip);
+        }
+      }
+      for (const y of [0.28, 1.24]) {
+        if (!gateWidth) {
+          const rail = new THREE.Mesh(new THREE.BoxGeometry(length, 0.06, 0.06), ironMat);
+          rail.position.set(0, y, 0);
+          run.add(rail);
+        } else {
+          const seg = (length - gateWidth) / 2;
+          for (const sd of [-1, 1]) {
+            const rail = new THREE.Mesh(new THREE.BoxGeometry(seg, 0.06, 0.06), ironMat);
+            rail.position.set(sd * (gateWidth / 2 + seg / 2), y, 0);
+            run.add(rail);
+          }
+        }
+      }
+      // The visual bars are narrow, but the runner needs a continuous solid
+      // barrier between piers. Keep the requested gate opening clear.
+      if (gateWidth) {
+        const seg = (length - gateWidth) / 2;
+        run.userData.colliderBoxes = [
+          { x: -(gateWidth / 2 + seg / 2), z: 0, w: seg, d: 0.18, h: 1.65 },
+          { x:  (gateWidth / 2 + seg / 2), z: 0, w: seg, d: 0.18, h: 1.65 }
+        ];
+      } else {
+        run.userData.colliderBoxes = [{ x: 0, z: 0, w: length, d: 0.18, h: 1.65 }];
+      }
+      run.traverse((n) => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+      return run;
+    }
+
+    // --- Seeded RNG ----------------------------------------------------------
+    // Re-seeded from the clock on every load, so the village comes out
+    // different each time. Pass a fixed seed here to reproduce a layout.
+    function makeRng(seed) {
+      let a = seed >>> 0;
+      return function rng() {
+        a += 0x6d2b79f5;
+        let t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    const rng = makeRng(Date.now() & 0xffffffff);
+    const rand = (lo, hi) => lo + rng() * (hi - lo);
+    const pick = (arr) => arr[Math.floor(rng() * arr.length) % arr.length];
+
+    // Oriented cylinder between two points — used for tower legs and bracing.
+    function strut(a, b, radius, mat) {
+      const dir = new THREE.Vector3().subVectors(b, a);
+      const len = dir.length();
+      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, len, 8), mat);
+      mesh.position.copy(a).addScaledVector(dir, 0.5);
+      mesh.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        dir.clone().normalize()
+      );
+      return mesh;
+    }
+
+    // --- Water tower ---------------------------------------------------------
+    // Riveted steel tank on splayed lattice legs. Nothing at ground level but
+    // the four feet, so it is pure silhouette from a distance.
+    function createWaterTower(opts = {}) {
+      const LEG_H = opts.legHeight || 14;
+      const BASE_SPREAD = opts.baseSpread || 4.6;
+      const TOP_SPREAD = opts.topSpread || 2.6;
+      const TANK_R = opts.tankRadius || 3.2;
+      const TANK_H = opts.tankHeight || 5.6;
+      const tower = new THREE.Group();
+      const steelMat = new THREE.MeshPhongMaterial({
+        color: opts.color || 0x6f7a72, shininess: 30
+      });
+
+      const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+      const basePts = corners.map(([sx, sz]) =>
+        new THREE.Vector3(sx * BASE_SPREAD, 0.4, sz * BASE_SPREAD));
+      const topPts = corners.map(([sx, sz]) =>
+        new THREE.Vector3(sx * TOP_SPREAD, LEG_H, sz * TOP_SPREAD));
+
+      basePts.forEach((b, i) => {
+        const footing = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.8, 1.1), stoneMat);
+        footing.position.set(b.x, 0.4, b.z);
+        tower.add(footing);
+        tower.add(strut(b, topPts[i], 0.19, steelMat));
+      });
+
+      // Horizontal rings and X bracing on each face.
+      const levels = [0.3, 0.58, 0.86];
+      const at = (i, t) => new THREE.Vector3().lerpVectors(basePts[i], topPts[i], t);
+      for (const t of levels) {
+        for (let i = 0; i < 4; i++) {
+          const j = (i + 1) % 4;
+          tower.add(strut(at(i, t), at(j, t), 0.09, steelMat));
+        }
+      }
+      for (let i = 0; i < 4; i++) {
+        const j = (i + 1) % 4;
+        for (let l = 0; l < levels.length - 1; l++) {
+          tower.add(strut(at(i, levels[l]), at(j, levels[l + 1]), 0.07, steelMat));
+          tower.add(strut(at(j, levels[l]), at(i, levels[l + 1]), 0.07, steelMat));
+        }
+        tower.add(strut(basePts[i], at((i + 1) % 4, levels[0]), 0.07, steelMat));
+      }
+
+      // Tank, hoop bands, conical cap.
+      const tank = new THREE.Mesh(
+        new THREE.CylinderGeometry(TANK_R, TANK_R, TANK_H, 20, 1, false),
+        steelMat
+      );
+      tank.position.y = LEG_H + TANK_H / 2;
+      tower.add(tank);
+      const floorPlate = new THREE.Mesh(
+        new THREE.CylinderGeometry(TANK_R, TANK_R * 0.72, 0.7, 20),
+        steelMat
+      );
+      floorPlate.position.y = LEG_H - 0.3;
+      tower.add(floorPlate);
+      for (let i = 0; i < 3; i++) {
+        const band = new THREE.Mesh(
+          new THREE.TorusGeometry(TANK_R + 0.04, 0.07, 6, 24),
+          steelMat
+        );
+        band.rotation.x = Math.PI / 2;
+        band.position.y = LEG_H + 0.9 + i * (TANK_H - 1.8) / 2;
+        tower.add(band);
+      }
+      const cap = new THREE.Mesh(
+        new THREE.ConeGeometry(TANK_R + 0.25, 1.7, 20),
+        new THREE.MeshPhongMaterial({ color: opts.roof || 0x4a4340, shininess: 10 })
+      );
+      cap.position.y = LEG_H + TANK_H + 0.85;
+      tower.add(cap);
+      const vent = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.9, 8), steelMat);
+      vent.position.y = LEG_H + TANK_H + 2.0;
+      tower.add(vent);
+
+      // Standable platform ringing the tank, with a railing that opens where
+      // the ladder arrives.
+      const DECK_R = TANK_R + 1.9; // wide enough to actually walk round the tank
+      const DECK_Y = LEG_H;
+      const deck = new THREE.Mesh(
+        new THREE.CylinderGeometry(DECK_R, DECK_R, 0.16, 24),
+        steelMat
+      );
+      deck.position.y = DECK_Y + 0.08;
+      tower.add(deck);
+      const deckEdge = new THREE.Mesh(
+        new THREE.TorusGeometry(DECK_R, 0.09, 6, 28),
+        steelMat
+      );
+      deckEdge.rotation.x = Math.PI / 2;
+      deckEdge.position.y = DECK_Y + 0.16;
+      tower.add(deckEdge);
+
+      // Ladder runs up the OUTSIDE of the platform, clear of the tank.
+      const LADDER_Z = DECK_R + 0.28;
+      const GAP = 0.62; // railing opening, in radians, centred on the ladder
+
+      const railGroup = new THREE.Group();
+      railGroup.rotation.x = Math.PI / 2;
+      railGroup.position.y = DECK_Y;
+      tower.add(railGroup);
+      for (const h of [0.55, 1.08]) {
+        const arc = new THREE.Mesh(
+          new THREE.TorusGeometry(DECK_R - 0.06, 0.05, 6, 32, Math.PI * 2 - GAP),
+          steelMat
+        );
+        arc.rotation.z = Math.PI / 2 + GAP / 2;
+        arc.position.z = -h; // parent is rotated, so local -z is world +y
+        railGroup.add(arc);
+      }
+      for (let i = 0; i < 16; i++) {
+        const a = (i / 16) * Math.PI * 2;
+        let d = Math.abs(a - Math.PI / 2);
+        d = Math.min(d, Math.PI * 2 - d);
+        if (d < GAP / 2 + 0.12) continue; // leave the ladder opening clear
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.15, 0.06), steelMat);
+        post.position.set(
+          Math.cos(a) * (DECK_R - 0.06),
+          DECK_Y + 0.65,
+          Math.sin(a) * (DECK_R - 0.06)
+        );
+        tower.add(post);
+      }
+
+      // Ladder: stiles run past the deck as grab handles, rungs every 0.34 m.
+      const LADDER_TOP = DECK_Y + 1.15;
+      for (const sd of [-1, 1]) {
+        const stile = new THREE.Mesh(
+          new THREE.BoxGeometry(0.07, LADDER_TOP - 0.3, 0.07),
+          steelMat
+        );
+        stile.position.set(sd * 0.26, (LADDER_TOP + 0.3) / 2, LADDER_Z);
+        tower.add(stile);
+      }
+      const rungs = Math.floor((DECK_Y - 0.4) / 0.34);
+      for (let i = 0; i <= rungs; i++) {
+        const rung = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.05, 0.05), steelMat);
+        rung.position.set(0, 0.5 + i * 0.34, LADDER_Z);
+        tower.add(rung);
+      }
+      // Where the climb starts and ends, for the climbing code to hook onto.
+      tower.userData.ladder = {
+        localX: 0,
+        localZ: LADDER_Z,
+        bottomY: 0.5,
+        topY: DECK_Y + 0.16,
+        deckR: DECK_R,
+        tankR: TANK_R
+      };
+
+      tower.traverse((n) => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+
+      // Only the four feet block movement — you can walk right under it.
+      tower.userData.colliderBoxes = basePts.map((b) => ({
+        x: b.x, z: b.z, w: 1.2, d: 1.2, h: LEG_H
+      }));
+      return tower;
+    }
+
+    // --- Barn ----------------------------------------------------------------
+    // The first enterable building: a cart doorway with no doors, no glazing,
+    // an open interior with exposed trusses and hay to hide behind. Collision
+    // is per-wall rather than one solid box, so you can actually get inside.
+    const barnStoneMat = new THREE.MeshPhongMaterial({
+      color: 0x8b8477, shininess: 4, side: THREE.DoubleSide
+    });
+    const barnTimberMat = new THREE.MeshPhongMaterial({
+      color: 0x53412c, shininess: 6, side: THREE.DoubleSide
+    });
+    const hayMat = new THREE.MeshPhongMaterial({ color: 0xc2a54e, shininess: 2 });
+    const dirtMat = new THREE.MeshPhongMaterial({ color: 0x53472f, shininess: 1 });
+
+    function createBarn(opts = {}) {
+      const W = opts.width || 12;
+      const D = opts.depth || 20;
+      const EAVE = opts.eave || 6.2;
+      const RISE = opts.rise || 4.2;
+      const T = 0.5;
+      const DOOR_W = opts.doorWidth || 4.4;
+      const DOOR_H = opts.doorHeight || 4.6;
+      const wallMat = opts.brick ? brickMat : barnStoneMat;
+
+      const barn = new THREE.Group();
+
+      const plinth = new THREE.Mesh(new THREE.BoxGeometry(W + 0.4, 0.4, D + 0.4), stoneMat);
+      plinth.position.y = 0.2;
+      barn.add(plinth);
+
+      // Beaten earth floor.
+      const floor = new THREE.Mesh(new THREE.BoxGeometry(W - 2 * T, 0.08, D - 2 * T), dirtMat);
+      floor.position.y = 0.44;
+      floor.receiveShadow = true;
+      barn.add(floor);
+
+      // Front gable wall: one big open doorway, ventilation slits above it.
+      const front = buildWall(
+        W, EAVE,
+        [
+          { x: 0, w: DOOR_W, h: DOOR_H, sill: 0, empty: true },
+          { x: -W / 2 + 1.5, w: 0.35, h: 1.1, sill: EAVE - 1.9, empty: true },
+          { x: W / 2 - 1.5, w: 0.35, h: 1.1, sill: EAVE - 1.9, empty: true }
+        ],
+        wallMat, T
+      );
+      front.position.set(0, 0.4, D / 2 - T / 2);
+      barn.add(front);
+
+      const REAR_W = opts.rearWidth || 2.2;
+      const back = buildWall(
+        W, EAVE,
+        [
+          { x: 0, w: REAR_W, h: 3.0, sill: 0, empty: true },
+          { x: -W / 2 + 1.5, w: 0.35, h: 1.1, sill: EAVE - 1.9, empty: true },
+          { x: W / 2 - 1.5, w: 0.35, h: 1.1, sill: EAVE - 1.9, empty: true }
+        ],
+        wallMat, T
+      );
+      back.position.set(0, 0.4, -(D / 2 - T / 2));
+      back.rotation.y = Math.PI;
+      barn.add(back);
+
+      const slits = [];
+      for (let i = 0; i < 5; i++) {
+        slits.push({ x: -D / 2 + 3 + i * ((D - 6) / 4), w: 0.35, h: 1.2, sill: EAVE - 2.1, empty: true });
+      }
+      for (const side of [-1, 1]) {
+        const wall = buildWall(D - 2 * T, EAVE, slits, wallMat, T);
+        wall.position.set(side * (W / 2 - T / 2), 0.4, 0);
+        wall.rotation.y = (side * Math.PI) / 2;
+        barn.add(wall);
+      }
+
+      // Gable prism and roof.
+      const gable = new THREE.Shape();
+      gable.moveTo(-W / 2, 0);
+      gable.lineTo(W / 2, 0);
+      gable.lineTo(0, RISE);
+      gable.closePath();
+      const gg = new THREE.ExtrudeGeometry(gable, { depth: 0.5, bevelEnabled: false });
+      for (const zEnd of [D / 2 - 0.25, -(D / 2 - 0.25)]) {
+        const gm = new THREE.Mesh(gg, opts.brick ? brickMat : barnTimberMat);
+        gm.position.set(0, 0.4 + EAVE, zEnd - 0.25);
+        barn.add(gm);
+      }
+
+      const run = W / 2;
+      const slope = Math.hypot(run, RISE);
+      const pitch = Math.atan2(RISE, run);
+      const OVER = 0.5, TH = 0.2;
+      const slabGeo = new THREE.BoxGeometry(slope + OVER, TH, D + 0.8);
+      const offX = (run / slope) * (OVER / 2) + (RISE / slope) * (TH / 2);
+      const offY = -(RISE / slope) * (OVER / 2) + (run / slope) * (TH / 2);
+      const barnRoofMat = new THREE.MeshPhongMaterial({
+        color: opts.roof || 0x4f463a, shininess: 4, side: THREE.DoubleSide
+      });
+      for (const side of [-1, 1]) {
+        const slab = new THREE.Mesh(slabGeo, barnRoofMat);
+        slab.position.x = side * (run / 2 + offX);
+        slab.position.y = 0.4 + EAVE + RISE / 2 + offY;
+        slab.rotation.z = -side * pitch;
+        barn.add(slab);
+      }
+
+      // Exposed trusses: tie beam, king post, and a pair of rafters each bay.
+      const bays = Math.max(3, Math.round(D / 4.5));
+      for (let i = 1; i < bays; i++) {
+        const z = -D / 2 + (D / bays) * i;
+        const tie = new THREE.Mesh(new THREE.BoxGeometry(W - 2 * T, 0.26, 0.22), barnTimberMat);
+        tie.position.set(0, 0.4 + EAVE + 0.1, z);
+        barn.add(tie);
+        const king = new THREE.Mesh(new THREE.BoxGeometry(0.2, RISE, 0.2), barnTimberMat);
+        king.position.set(0, 0.4 + EAVE + RISE / 2, z);
+        barn.add(king);
+        for (const side of [-1, 1]) {
+          const rafter = new THREE.Mesh(new THREE.BoxGeometry(slope, 0.18, 0.18), barnTimberMat);
+          rafter.position.set(side * (run / 2), 0.4 + EAVE + RISE / 2, z);
+          rafter.rotation.z = -side * pitch;
+          barn.add(rafter);
+        }
+      }
+
+      // Hay bales — cover you can crouch behind, stacked against the walls.
+      const baleGeo = new THREE.BoxGeometry(1.7, 0.85, 0.95);
+      const balePlan = [
+        [-W / 2 + 1.6, 0.9, -D / 2 + 3.0, 0],
+        [-W / 2 + 1.6, 1.78, -D / 2 + 3.1, 0.12],
+        [-W / 2 + 1.7, 0.9, -D / 2 + 4.2, 0.3],
+        [W / 2 - 1.7, 0.9, -D / 2 + 3.4, -0.2],
+        [W / 2 - 1.7, 1.78, -D / 2 + 3.3, 0.05],
+        [W / 2 - 1.9, 0.9, D / 2 - 5.0, 0.5],
+        [0.4, 0.9, -D / 2 + 6.4, 1.2],
+        [-1.2, 0.9, D / 2 - 6.2, -0.6]
+      ];
+      for (const [bx, by, bz, rot] of balePlan) {
+        const bale = new THREE.Mesh(baleGeo, hayMat);
+        bale.position.set(bx, 0.44 + by - 0.45, bz);
+        bale.rotation.y = rot;
+        barn.add(bale);
+      }
+
+      barn.traverse((n) => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+
+      // Per-wall collision. Both doorways are gaps in the collision as well as
+      // in the geometry, so you can walk in the front and out the back.
+      const seg = (W - DOOR_W) / 2;
+      const rseg = (W - REAR_W) / 2;
+      const wallH = 0.4 + EAVE;
+      const boxes = [
+        { x: -W / 2 + T / 2, z: 0, w: T, d: D, h: wallH },
+        { x: W / 2 - T / 2, z: 0, w: T, d: D, h: wallH },
+        { x: -(DOOR_W / 2 + seg / 2), z: D / 2 - T / 2, w: seg, d: T, h: wallH },
+        { x: DOOR_W / 2 + seg / 2, z: D / 2 - T / 2, w: seg, d: T, h: wallH },
+        { x: -(REAR_W / 2 + rseg / 2), z: -(D / 2 - T / 2), w: rseg, d: T, h: wallH },
+        { x: REAR_W / 2 + rseg / 2, z: -(D / 2 - T / 2), w: rseg, d: T, h: wallH }
+      ];
+
+      // Hay bales are solid too — that is what makes them cover rather than
+      // decoration. Rotated bales get their enclosing box.
+      for (const [bx, by, bz, rot] of balePlan) {
+        const c = Math.abs(Math.cos(rot));
+        const sn = Math.abs(Math.sin(rot));
+        boxes.push({
+          x: bx,
+          z: bz,
+          w: c * 1.7 + sn * 0.95,
+          d: sn * 1.7 + c * 0.95,
+          h: 0.44 + by
+        });
+      }
+
+      barn.userData.colliderBoxes = boxes;
+      return barn;
+    }
+
+    // --- École (school) ------------------------------------------------------
+    // Long, plain and institutional: a regular rank of tall windows, stone
+    // quoins, a canopy over the door and a bell cote on the ridge.
+    function createSchool(opts = {}) {
+      const W = opts.width || 28;
+      const D = opts.depth || 11;
+      const GROUND = 3.9, UPPER = 3.5;
+      const EAVE = GROUND + UPPER;
+      const RISE = opts.rise || 3.0;
+      const T = 0.4;
+      const wallMat = opts.plaster ? plasterMat : brickMat;
+      const schoolRoofMat = new THREE.MeshPhongMaterial({
+        color: opts.roof || 0x4d4a4e, shininess: 6
+      });
+
+      const school = new THREE.Group();
+
+      const plinth = new THREE.Mesh(new THREE.BoxGeometry(W + 0.5, 0.5, D + 0.5), stoneMat);
+      plinth.position.y = 0.25;
+      school.add(plinth);
+
+      const bays = opts.bays || 9;
+      const bayX = (i) => (i - (bays - 1) / 2) * (W / bays);
+      const frontOpenings = [{ x: 0, w: 1.9, h: 3.0, sill: 0, door: true }];
+      for (let i = 0; i < bays; i++) {
+        if (i !== (bays - 1) / 2) {
+          frontOpenings.push({ x: bayX(i), w: 1.35, h: 2.6, sill: 0.95, barsV: 1, barsH: 3 });
+        }
+        frontOpenings.push({ x: bayX(i), w: 1.35, h: 2.25, sill: GROUND + 0.8, barsV: 1, barsH: 2 });
+      }
+      const backOpenings = [];
+      for (let i = 0; i < bays; i += 2) {
+        backOpenings.push({ x: bayX(i), w: 1.3, h: 2.5, sill: 1.0, barsH: 3 });
+        backOpenings.push({ x: bayX(i), w: 1.3, h: 2.2, sill: GROUND + 0.8, barsH: 2 });
+      }
+      const sideOpenings = [
+        { x: 0, w: 1.2, h: 2.4, sill: 1.0, barsH: 3 },
+        { x: 0, w: 1.2, h: 2.1, sill: GROUND + 0.8, barsH: 2 }
+      ];
+
+      const front = buildWall(W, EAVE, frontOpenings, wallMat, T);
+      front.position.set(0, 0.5, D / 2 - T / 2);
+      school.add(front);
+      const back = buildWall(W, EAVE, backOpenings, wallMat, T);
+      back.position.set(0, 0.5, -(D / 2 - T / 2));
+      back.rotation.y = Math.PI;
+      school.add(back);
+      for (const side of [-1, 1]) {
+        const wall = buildWall(D - 2 * T, EAVE, sideOpenings, wallMat, T);
+        wall.position.set(side * (W / 2 - T / 2), 0.5, 0);
+        wall.rotation.y = (side * Math.PI) / 2;
+        school.add(wall);
+      }
+
+      // Stone quoins up the corners — cheap, and instantly reads institutional.
+      for (const sd of [-1, 1]) {
+        for (let i = 0; i < 11; i++) {
+          const q = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.62, 0.34), stoneMat);
+          q.position.set(sd * (W / 2 - 0.3), 0.5 + 0.4 + i * 0.68, D / 2 + 0.02);
+          school.add(q);
+        }
+      }
+
+      // Canopy on iron posts over the entrance.
+      const canopy = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.16, 1.7), stoneMat);
+      canopy.position.set(0, 0.5 + 3.35, D / 2 + 0.75);
+      school.add(canopy);
+      for (const sd of [-1, 1]) {
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 3.3, 8), ironMat);
+        post.position.set(sd * 1.6, 0.5 + 1.65, D / 2 + 1.45);
+        school.add(post);
+      }
+      for (let i = 0; i < 3; i++) {
+        const step = new THREE.Mesh(new THREE.BoxGeometry(3.4 - i * 0.4, 0.18, 1.1 - i * 0.25), stoneMat);
+        step.position.set(0, 0.09 + i * 0.18, D / 2 + 1.2 - i * 0.22);
+        school.add(step);
+      }
+
+      // Roof, ridge along the length.
+      const roofGroup = new THREE.Group();
+      const gable = new THREE.Shape();
+      gable.moveTo(-D / 2, 0); gable.lineTo(D / 2, 0); gable.lineTo(0, RISE); gable.closePath();
+      const gg = new THREE.ExtrudeGeometry(gable, { depth: W, bevelEnabled: false });
+      gg.translate(0, 0, -W / 2);
+      roofGroup.add(new THREE.Mesh(gg, wallMat));
+      const run = D / 2;
+      const slope = Math.hypot(run, RISE);
+      const pitch = Math.atan2(RISE, run);
+      const OVER = 0.55, TH = 0.2;
+      const slabGeo = new THREE.BoxGeometry(slope + OVER, TH, W + 0.9);
+      const offX = (run / slope) * (OVER / 2) + (RISE / slope) * (TH / 2);
+      const offY = -(RISE / slope) * (OVER / 2) + (run / slope) * (TH / 2);
+      for (const side of [-1, 1]) {
+        const slab = new THREE.Mesh(slabGeo, schoolRoofMat);
+        slab.position.x = side * (run / 2 + offX);
+        slab.position.y = RISE / 2 + offY;
+        slab.rotation.z = -side * pitch;
+        roofGroup.add(slab);
+      }
+      roofGroup.rotation.y = Math.PI / 2;
+      roofGroup.position.y = 0.5 + EAVE;
+      school.add(roofGroup);
+
+      // Bell cote straddling the ridge.
+      const coteY = 0.5 + EAVE + RISE;
+      const cote = new THREE.Group();
+      for (const sd of [-1, 1]) {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.26, 1.5, 0.3), stoneMat);
+        leg.position.set(sd * 0.55, 0.75, 0);
+        cote.add(leg);
+      }
+      const lintel = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.26, 0.34), stoneMat);
+      lintel.position.y = 1.62;
+      cote.add(lintel);
+      const capstone = new THREE.Shape();
+      capstone.moveTo(-0.85, 0); capstone.lineTo(0.85, 0); capstone.lineTo(0, 0.7); capstone.closePath();
+      const capMesh = new THREE.Mesh(
+        new THREE.ExtrudeGeometry(capstone, { depth: 0.34, bevelEnabled: false }),
+        stoneMat
+      );
+      capMesh.position.set(0, 1.75, -0.17);
+      cote.add(capMesh);
+      const bell = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.3, 0.42, 10), brassMat);
+      bell.position.y = 1.2;
+      cote.add(bell);
+      cote.position.set(0, coteY, 0);
+      school.add(cote);
+
+      const floor = new THREE.Mesh(new THREE.BoxGeometry(W - 2 * T, 0.1, D - 2 * T), interiorMat);
+      floor.position.y = 0.55;
+      school.add(floor);
+      const ceiling = new THREE.Mesh(new THREE.BoxGeometry(W - 2 * T, 0.1, D - 2 * T), interiorMat);
+      ceiling.position.y = 0.5 + EAVE - 0.05;
+      school.add(ceiling);
+
+      school.traverse((n) => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+      school.userData.footprint = { w: W, d: D, h: 0.5 + EAVE + RISE };
+      return school;
+    }
+
+    // --- Farmhouse -----------------------------------------------------------
+    // Long, low and stone: fewer, smaller openings than a village house, a big
+    // gable-end chimney and a lean-to scullery on one end.
+    function createFarmhouse(opts = {}) {
+      const W = opts.width || 16;
+      const D = opts.depth || 7.5;
+      const EAVE = opts.eave || 4.5;
+      const RISE = opts.rise || 2.9;
+      const T = 0.45;
+      const farm = new THREE.Group();
+      const wallMat = opts.plaster ? plasterMat : barnStoneMat;
+      const fRoofMat = new THREE.MeshPhongMaterial({
+        color: opts.roof || 0x6b5340, shininess: 5
+      });
+
+      const plinth = new THREE.Mesh(new THREE.BoxGeometry(W + 0.4, 0.4, D + 0.4), stoneMat);
+      plinth.position.y = 0.2;
+      farm.add(plinth);
+
+      const frontOpenings = [
+        { x: -1.6, w: 1.05, h: 2.0, sill: 0, door: true },
+        { x: -W / 2 + 1.9, w: 0.85, h: 1.05, sill: 1.15, barsH: 1 },
+        { x: 1.7, w: 0.9, h: 1.1, sill: 1.15, barsH: 1 },
+        { x: W / 2 - 2.4, w: 0.9, h: 1.1, sill: 1.15, barsH: 1 },
+        { x: -W / 2 + 2.6, w: 0.75, h: 0.85, sill: EAVE - 1.5, barsH: 1 },
+        { x: 2.4, w: 0.75, h: 0.85, sill: EAVE - 1.5, barsH: 1 }
+      ];
+      const backOpenings = [
+        { x: -3.0, w: 0.85, h: 1.0, sill: 1.2, barsH: 1 },
+        { x: 3.4, w: 0.85, h: 1.0, sill: 1.2, barsH: 1 }
+      ];
+      const sideOpenings = [{ x: 0, w: 0.7, h: 0.9, sill: 1.3, barsH: 1 }];
+
+      const front = buildWall(W, EAVE, frontOpenings, wallMat, T, timberMat);
+      front.position.set(0, 0.4, D / 2 - T / 2);
+      farm.add(front);
+      const back = buildWall(W, EAVE, backOpenings, wallMat, T, timberMat);
+      back.position.set(0, 0.4, -(D / 2 - T / 2));
+      back.rotation.y = Math.PI;
+      farm.add(back);
+      for (const side of [-1, 1]) {
+        const wall = buildWall(D - 2 * T, EAVE, sideOpenings, wallMat, T, timberMat);
+        wall.position.set(side * (W / 2 - T / 2), 0.4, 0);
+        wall.rotation.y = (side * Math.PI) / 2;
+        farm.add(wall);
+      }
+
+      // Roof with the ridge along the length.
+      const roofGroup = new THREE.Group();
+      const gable = new THREE.Shape();
+      gable.moveTo(-D / 2, 0); gable.lineTo(D / 2, 0); gable.lineTo(0, RISE); gable.closePath();
+      const gg = new THREE.ExtrudeGeometry(gable, { depth: W, bevelEnabled: false });
+      gg.translate(0, 0, -W / 2);
+      roofGroup.add(new THREE.Mesh(gg, wallMat));
+      const run = D / 2;
+      const slope = Math.hypot(run, RISE);
+      const pitch = Math.atan2(RISE, run);
+      const OVER = 0.5, TH = 0.2;
+      const slabGeo = new THREE.BoxGeometry(slope + OVER, TH, W + 0.8);
+      const offX = (run / slope) * (OVER / 2) + (RISE / slope) * (TH / 2);
+      const offY = -(RISE / slope) * (OVER / 2) + (run / slope) * (TH / 2);
+      for (const side of [-1, 1]) {
+        const slab = new THREE.Mesh(slabGeo, fRoofMat);
+        slab.position.x = side * (run / 2 + offX);
+        slab.position.y = RISE / 2 + offY;
+        slab.rotation.z = -side * pitch;
+        roofGroup.add(slab);
+      }
+      roofGroup.rotation.y = Math.PI / 2;
+      roofGroup.position.y = 0.4 + EAVE;
+      farm.add(roofGroup);
+
+      // Big gable-end chimney, the full width of the wall head.
+      const chH = 0.4 + EAVE + RISE + 1.4;
+      const stack = new THREE.Mesh(new THREE.BoxGeometry(1.0, chH, 2.0), barnStoneMat);
+      stack.position.set(-W / 2 + 0.2, chH / 2, 0);
+      farm.add(stack);
+      const chCap = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.24, 2.3), stoneMat);
+      chCap.position.set(-W / 2 + 0.2, chH + 0.12, 0);
+      farm.add(chCap);
+
+      // Lean-to scullery on the far end.
+      const LEAN_W = 3.6;
+      const leanX = W / 2 + LEAN_W / 2;
+      const lean = new THREE.Mesh(new THREE.BoxGeometry(LEAN_W, 2.9, D - 0.8), wallMat);
+      lean.position.set(leanX, 0.4 + 1.45, 0);
+      farm.add(lean);
+      const leanRoof = new THREE.Mesh(new THREE.BoxGeometry(LEAN_W + 0.5, 0.16, D + 0.1), fRoofMat);
+      leanRoof.position.set(leanX, 0.4 + 3.05, 0);
+      leanRoof.rotation.z = -0.3;
+      farm.add(leanRoof);
+      const leanDoor = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.9, 0.08), timberMat);
+      leanDoor.position.set(leanX, 0.4 + 0.95, (D - 0.8) / 2 + 0.04);
+      farm.add(leanDoor);
+
+      const floor = new THREE.Mesh(new THREE.BoxGeometry(W - 2 * T, 0.1, D - 2 * T), interiorMat);
+      floor.position.y = 0.45;
+      farm.add(floor);
+      const ceiling = new THREE.Mesh(new THREE.BoxGeometry(W - 2 * T, 0.1, D - 2 * T), interiorMat);
+      ceiling.position.y = 0.4 + EAVE - 0.05;
+      farm.add(ceiling);
+
+      farm.traverse((n) => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+      farm.userData.colliderBoxes = [
+        { x: 0, z: 0, w: W, d: D, h: 0.4 + EAVE + RISE },
+        { x: leanX, z: 0, w: LEAN_W, d: D - 0.8, h: 0.4 + 3.0 }
+      ];
+      return farm;
+    }
+
+    // --- Walled courtyard ----------------------------------------------------
+    // Stone walls with coping and a cart gate. Returns collider boxes split
+    // around the gateway so it can actually be driven through.
+    function createCourtyardWall(W, D, opts = {}) {
+      const H = opts.height || 2.0;
+      const T = opts.thickness || 0.45;
+      const GATE = opts.gate || 3.6;
+      const group = new THREE.Group();
+      const boxes = [];
+
+      function panel(cx, cz, w, d) {
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(w, H, d), barnStoneMat);
+        wall.position.set(cx, H / 2, cz);
+        group.add(wall);
+        const cope = new THREE.Mesh(new THREE.BoxGeometry(w + 0.12, 0.16, d + 0.12), stoneMat);
+        cope.position.set(cx, H + 0.08, cz);
+        group.add(cope);
+        boxes.push({ x: cx, z: cz, w, d, h: H });
+      }
+
+      // Front wall, split around the gate.
+      const seg = (W - GATE) / 2;
+      for (const sd of [-1, 1]) {
+        panel(sd * (GATE / 2 + seg / 2), D / 2 - T / 2, seg, T);
+        // Gate piers.
+        const pier = new THREE.Mesh(new THREE.BoxGeometry(0.7, H + 0.7, 0.7), stoneMat);
+        pier.position.set(sd * (GATE / 2 + 0.35), (H + 0.7) / 2, D / 2 - T / 2);
+        group.add(pier);
+        boxes.push({ x: sd * (GATE / 2 + 0.35), z: D / 2 - T / 2, w: 0.7, d: 0.7, h: H + 0.7 });
+        const ball = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8), stoneMat);
+        ball.position.set(sd * (GATE / 2 + 0.35), H + 0.95, D / 2 - T / 2);
+        group.add(ball);
+      }
+      // Sides. The back is left open for the farmhouse to close.
+      for (const sd of [-1, 1]) {
+        panel(sd * (W / 2 - T / 2), 0, T, D);
+      }
+
+      group.traverse((n) => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+      group.userData.colliderBoxes = boxes;
+      return group;
+    }
+
+    // Farmyard clutter: a well, a trough and a woodpile.
+    function createWell() {
+      const well = new THREE.Group();
+      const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.05, 0.95, 14), barnStoneMat);
+      ring.position.y = 0.48;
+      well.add(ring);
+      const water = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.82, 0.82, 0.05, 14),
+        new THREE.MeshPhongMaterial({ color: 0x22343a, shininess: 90 })
+      );
+      water.position.y = 0.8;
+      well.add(water);
+      for (const sd of [-1, 1]) {
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, 2.0, 0.14), timberMat);
+        post.position.set(sd * 0.85, 1.4, 0);
+        well.add(post);
+      }
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.14, 0.14), timberMat);
+      beam.position.y = 2.35;
+      well.add(beam);
+      const roofA = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.1, 1.5), timberMat);
+      roofA.position.set(-0.42, 2.62, 0);
+      roofA.rotation.z = 0.5;
+      well.add(roofA);
+      const roofB = roofA.clone();
+      roofB.position.x = 0.42;
+      roofB.rotation.z = -0.5;
+      well.add(roofB);
+      const bucket = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.17, 0.3, 10), timberMat);
+      bucket.position.y = 1.75;
+      well.add(bucket);
+      well.traverse((n) => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+      well.userData.colliderBoxes = [{ x: 0, z: 0, w: 2.1, d: 2.1, h: 1.0 }];
+      return well;
+    }
+
+    // --- Chamfered-plan helpers ----------------------------------------------
+    // A corner block is not a box with one wall turned: its plinth, floor, roof
+    // and cornice all have to follow the cut corner too.
+    function chamferPoints(W, D, C) {
+      return [
+        [-W / 2, -D / 2],
+        [W / 2, -D / 2],
+        [W / 2, D / 2 - C],
+        [W / 2 - C, D / 2],
+        [-W / 2, D / 2]
+      ];
+    }
+
+    // Extrude a plan polygon upward; base sits at y = 0.
+    function prismFromPlan(pts, height) {
+      const shape = new THREE.Shape();
+      shape.moveTo(pts[0][0], -pts[0][1]);
+      for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], -pts[i][1]);
+      shape.closePath();
+      const geo = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
+      geo.rotateX(-Math.PI / 2);
+      return geo;
+    }
+
+    // Hipped roof over an arbitrary plan: base ring lofted to a smaller ring.
+    function hipRoofGeometry(pts, rise, inset) {
+      let cx = 0, cz = 0;
+      for (const [x, z] of pts) { cx += x; cz += z; }
+      cx /= pts.length; cz /= pts.length;
+      const top = pts.map(([x, z]) => [
+        cx + (x - cx) * inset,
+        cz + (z - cz) * inset
+      ]);
+      const verts = [];
+      const n = pts.length;
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        const b1 = [pts[i][0], 0, pts[i][1]];
+        const b2 = [pts[j][0], 0, pts[j][1]];
+        const t1 = [top[i][0], rise, top[i][1]];
+        const t2 = [top[j][0], rise, top[j][1]];
+        verts.push(...b1, ...b2, ...t2);
+        verts.push(...b1, ...t2, ...t1);
+      }
+      for (let i = 1; i < n - 1; i++) {
+        verts.push(top[0][0], rise, top[0][1]);
+        verts.push(top[i][0], rise, top[i][1]);
+        verts.push(top[i + 1][0], rise, top[i + 1][1]);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+      geo.computeVertexNormals();
+      return geo;
+    }
+
+    // --- Corner unit ---------------------------------------------------------
+    // A block with its street corner cut away at 45 degrees and the entrance
+    // set into the chamfer. Rectangles dropped on a junction read wrong; this
+    // is the piece that makes a street grid work.
+    function createCornerUnit(opts = {}) {
+      const W = opts.width || 10;
+      const D = opts.depth || 10;
+      const C = opts.chamfer || 3.0;          // how much of each corner is cut
+      const STOREYS = opts.storeys || 2;
+      const GROUND = opts.shopfront ? 3.3 : 2.9;
+      const UPPER = 2.75;
+      const EAVE = GROUND + UPPER * (STOREYS - 1);
+      const T = 0.36;
+      const unit = new THREE.Group();
+
+      const wallMat = opts.plaster ? plasterMat : brickMat;
+      const paintMat = opts.paint
+        ? new THREE.MeshPhongMaterial({ color: opts.paint, shininess: 26 })
+        : undefined;
+      const cornerRoofMat = new THREE.MeshPhongMaterial({
+        color: opts.roof || 0x4d4a4e, shininess: 6
+      });
+
+      const plan = chamferPoints(W, D, C);
+      const planOut = chamferPoints(W + 0.2, D + 0.2, C + 0.14);
+      const plinth = new THREE.Mesh(prismFromPlan(planOut, 0.4), stoneMat);
+      unit.add(plinth);
+
+      // Upper-floor window rows, shared by every elevation.
+      const upperRow = (span, count) => {
+        const out = [];
+        for (let sIdx = 1; sIdx < STOREYS; sIdx++) {
+          const sill = GROUND + (sIdx - 1) * UPPER + 0.85;
+          for (let i = 0; i < count; i++) {
+            out.push({
+              x: -span / 2 + (span / (count + 1)) * (i + 1),
+              w: 0.95, h: 1.3, sill, barsV: 1, barsH: 2
+            });
+          }
+        }
+        return out;
+      };
+
+      // The five faces: two streets, the chamfer, and two party/rear walls.
+      const faces = [
+        { span: W - C, cx: -C / 2, cz: D / 2 - T / 2, rot: 0, street: true },
+        { span: D - C, cx: W / 2 - T / 2, cz: -C / 2, rot: Math.PI / 2, street: true },
+        { span: W, cx: 0, cz: -(D / 2 - T / 2), rot: Math.PI, street: false },
+        { span: D, cx: -(W / 2 - T / 2), cz: 0, rot: -Math.PI / 2, street: false }
+      ];
+
+      faces.forEach((f) => {
+        const openings = upperRow(f.span, f.street ? 3 : 2);
+        if (f.street) {
+          if (opts.shopfront) {
+            openings.push({
+              x: 0, w: Math.min(2.8, f.span - 1.8), h: 2.1, sill: 0.7,
+              barsV: 2, barsH: 1
+            });
+          } else {
+            openings.push({ x: -f.span / 4, w: 1.0, h: 1.35, sill: 1.0, barsH: 2 });
+            openings.push({ x: f.span / 4, w: 1.0, h: 1.35, sill: 1.0, barsH: 2 });
+          }
+        } else {
+          openings.push({ x: 0, w: 1.0, h: 1.3, sill: 1.05, barsH: 2 });
+        }
+        const wall = buildWall(f.span, EAVE, openings, wallMat, T, paintMat);
+        wall.position.set(f.cx, 0.4, f.cz);
+        wall.rotation.y = f.rot;
+        unit.add(wall);
+      });
+
+      // Chamfer wall carrying the entrance.
+      const chamferLen = C * Math.SQRT2;
+      const chamferOpenings = [
+        { x: 0, w: 1.15, h: 2.25, sill: 0, door: true },
+        ...upperRow(chamferLen, 1)
+      ];
+      const chamfer = buildWall(chamferLen, EAVE, chamferOpenings, wallMat, T, paintMat);
+      chamfer.position.set(W / 2 - C / 2, 0.4, D / 2 - C / 2);
+      chamfer.rotation.y = -Math.PI / 4;
+      unit.add(chamfer);
+
+      // Cornice following the chamfered plan, then either a parapet or a roof.
+      const corniceY = 0.4 + EAVE + 0.18;
+      const bands = [
+        [W - C + 0.2, 0.36, -C / 2, D / 2, 0],
+        [D - C + 0.2, 0.36, W / 2, -C / 2, Math.PI / 2],
+        [W + 0.2, 0.36, 0, -D / 2, 0],
+        [D + 0.2, 0.36, -W / 2, 0, Math.PI / 2],
+        [chamferLen + 0.2, 0.36, W / 2 - C / 2, D / 2 - C / 2, -Math.PI / 4]
+      ];
+      for (const [len, h, bx, bz, rot] of bands) {
+        const band = new THREE.Mesh(new THREE.BoxGeometry(len, h, 0.34), stoneMat);
+        band.position.set(bx, corniceY, bz);
+        band.rotation.y = rot;
+        unit.add(band);
+        if (opts.parapet) {
+          const para = new THREE.Mesh(new THREE.BoxGeometry(len - 0.1, 0.85, 0.26), wallMat);
+          para.position.set(bx, corniceY + 0.6, bz);
+          para.rotation.y = rot;
+          unit.add(para);
+          const cap = new THREE.Mesh(new THREE.BoxGeometry(len, 0.12, 0.34), stoneMat);
+          cap.position.set(bx, corniceY + 1.08, bz);
+          cap.rotation.y = rot;
+          unit.add(cap);
+        }
+      }
+
+      if (opts.parapet) {
+        const flat = new THREE.Mesh(
+          prismFromPlan(chamferPoints(W - 0.5, D - 0.5, C - 0.35), 0.16),
+          cornerRoofMat
+        );
+        flat.position.y = 0.4 + EAVE + 0.3;
+        unit.add(flat);
+      } else {
+        // Hipped roof lofted from the chamfered plan, so the cut corner carries
+        // all the way up through the eaves and the ridge.
+        const RISE = opts.rise || 2.4;
+        const eaves = chamferPoints(W + 0.7, D + 0.7, C + 0.5);
+        const roof = new THREE.Mesh(hipRoofGeometry(eaves, RISE, 0.26), cornerRoofMat);
+        roof.position.y = 0.4 + EAVE + 0.36;
+        unit.add(roof);
+        const fascia = new THREE.Mesh(prismFromPlan(eaves, 0.16), cornerRoofMat);
+        fascia.position.y = 0.4 + EAVE + 0.24;
+        unit.add(fascia);
+      }
+
+      // Chimney tucked on the blind corner.
+      const chH = 0.4 + EAVE + (opts.parapet ? 1.8 : 3.4);
+      const stack = new THREE.Mesh(new THREE.BoxGeometry(0.8, chH, 0.8), brickMat);
+      stack.position.set(-W / 2 + 1.1, chH / 2, -D / 2 + 1.1);
+      unit.add(stack);
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.2, 1.05), stoneMat);
+      cap.position.set(-W / 2 + 1.1, chH + 0.1, -D / 2 + 1.1);
+      unit.add(cap);
+
+      // Corner lamp bracket over the entrance — a nice junction marker.
+      if (opts.lamp) {
+        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.8), ironMat);
+        arm.position.set(W / 2 - C / 2 + 0.28, 0.4 + GROUND + 0.5, D / 2 - C / 2 + 0.28);
+        arm.rotation.y = -Math.PI / 4;
+        unit.add(arm);
+        const lamp = new THREE.Mesh(new THREE.ConeGeometry(0.26, 0.34, 8), ironMat);
+        lamp.position.set(W / 2 - C / 2 + 0.55, 0.4 + GROUND + 0.42, D / 2 - C / 2 + 0.55);
+        unit.add(lamp);
+      }
+
+      const planIn = chamferPoints(W - 2 * T, D - 2 * T, C - T);
+      const floor = new THREE.Mesh(prismFromPlan(planIn, 0.1), interiorMat);
+      floor.position.y = 0.45;
+      unit.add(floor);
+      const ceiling = new THREE.Mesh(prismFromPlan(planIn, 0.1), interiorMat);
+      ceiling.position.y = 0.4 + EAVE - 0.05;
+      unit.add(ceiling);
+
+      unit.traverse((n) => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+      unit.userData.footprint = { w: W, d: D, h: chH };
+      return unit;
+    }
+
+    // --- Mairie (town hall) --------------------------------------------------
+    function createTownHall() {
+      const W = 30, D = 15;
+      const GROUND = 4.2, UPPER = 3.8;
+      const EAVE = GROUND + UPPER;
+      const RISE = 3.4;
+      const T = 0.42;
+      const hall = new THREE.Group();
+
+      const plinth = new THREE.Mesh(new THREE.BoxGeometry(W + 0.7, 0.6, D + 0.7), stoneMat);
+      plinth.position.y = 0.3;
+      hall.add(plinth);
+
+      // Nine-bay façade: tall ground-floor windows, central doorway.
+      const bay = (i) => (i - 4) * 3.2;
+      const frontOpenings = [{ x: 0, w: 2.1, h: 3.3, sill: 0, door: true }];
+      for (let i = 0; i < 9; i++) {
+        if (i !== 4) frontOpenings.push({ x: bay(i), w: 1.25, h: 2.5, sill: 1.0, barsH: 3 });
+        frontOpenings.push({ x: bay(i), w: 1.25, h: 2.2, sill: GROUND + 0.9, barsH: 2 });
+      }
+      const backOpenings = [];
+      for (let i = 0; i < 9; i += 2) {
+        backOpenings.push({ x: bay(i), w: 1.2, h: 2.3, sill: 1.1, barsH: 3 });
+        backOpenings.push({ x: bay(i), w: 1.2, h: 2.1, sill: GROUND + 0.9, barsH: 2 });
+      }
+      const sideOpenings = [];
+      for (const z of [-4.4, 0, 4.4]) {
+        sideOpenings.push({ x: z, w: 1.2, h: 2.4, sill: 1.05, barsH: 3 });
+        sideOpenings.push({ x: z, w: 1.2, h: 2.1, sill: GROUND + 0.9, barsH: 2 });
+      }
+
+      const front = buildWall(W, EAVE, frontOpenings, civicMat, T);
+      front.position.set(0, 0.6, D / 2 - T / 2);
+      hall.add(front);
+      const back = buildWall(W, EAVE, backOpenings, civicMat, T);
+      back.position.set(0, 0.6, -(D / 2 - T / 2));
+      back.rotation.y = Math.PI;
+      hall.add(back);
+      for (const side of [-1, 1]) {
+        const wall = buildWall(D - 2 * T, EAVE, sideOpenings, civicMat, T);
+        wall.position.set(side * (W / 2 - T / 2), 0.6, 0);
+        wall.rotation.y = (side * Math.PI) / 2;
+        hall.add(wall);
+      }
+
+      // Central pavilion: pilasters, entablature and pediment with a clock.
+      for (const x of [-5.6, -2.1, 2.1, 5.6]) {
+        const pilaster = new THREE.Mesh(new THREE.BoxGeometry(0.72, EAVE, 0.5), stoneMat);
+        pilaster.position.set(x, 0.6 + EAVE / 2, D / 2 + 0.2);
+        hall.add(pilaster);
+      }
+      const entab = new THREE.Mesh(new THREE.BoxGeometry(13.2, 0.85, 0.75), stoneMat);
+      entab.position.set(0, 0.6 + EAVE + 0.42, D / 2 + 0.2);
+      hall.add(entab);
+      const ped = new THREE.Shape();
+      ped.moveTo(-6.6, 0); ped.lineTo(6.6, 0); ped.lineTo(0, 2.4); ped.closePath();
+      const pedMesh = new THREE.Mesh(
+        new THREE.ExtrudeGeometry(ped, { depth: 0.75, bevelEnabled: false }),
+        stoneMat
+      );
+      pedMesh.position.set(0, 0.6 + EAVE + 0.85, D / 2 - 0.18);
+      hall.add(pedMesh);
+
+      const clockFace = new THREE.Mesh(new THREE.CylinderGeometry(0.78, 0.78, 0.12, 20), plasterMat);
+      clockFace.rotation.x = Math.PI / 2;
+      clockFace.position.set(0, 0.6 + EAVE + 1.75, D / 2 + 0.64);
+      hall.add(clockFace);
+      for (const [len, ang] of [[0.55, 1.1], [0.36, -0.5]]) {
+        const hand = new THREE.Mesh(new THREE.BoxGeometry(0.06, len, 0.04), ironMat);
+        hand.position.set(Math.sin(ang) * len / 2, 0.6 + EAVE + 1.75 + Math.cos(ang) * len / 2, D / 2 + 0.72);
+        hand.rotation.z = -ang;
+        hall.add(hand);
+      }
+
+      // Entrance steps and balcony over the door.
+      for (let i = 0; i < 3; i++) {
+        const step = new THREE.Mesh(new THREE.BoxGeometry(5.0 - i * 0.5, 0.2, 1.4 - i * 0.35), stoneMat);
+        step.position.set(0, 0.1 + i * 0.2, D / 2 + 1.5 - i * 0.3);
+        hall.add(step);
+      }
+      const balcony = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.18, 1.1), stoneMat);
+      balcony.position.set(0, 0.6 + GROUND + 0.1, D / 2 + 0.5);
+      hall.add(balcony);
+      const balY = 0.6 + GROUND + 0.46;
+      const balFrontZ = D / 2 + 0.95;
+      for (let i = 0; i <= 10; i++) {
+        const baluster = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.55, 6), stoneMat);
+        baluster.position.set(-2.2 + i * 0.44, balY, balFrontZ);
+        hall.add(baluster);
+      }
+      // Returns down both sides, corner posts, and a coping rail on top, so the
+      // balustrade reads as an enclosure rather than a loose row of posts.
+      for (const sd of [-1, 1]) {
+        for (const z of [D / 2 + 0.5, D / 2 + 0.73]) {
+          const baluster = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.55, 6), stoneMat);
+          baluster.position.set(sd * 2.2, balY, z);
+          hall.add(baluster);
+        }
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.72, 0.26), stoneMat);
+        post.position.set(sd * 2.32, 0.6 + GROUND + 0.55, balFrontZ);
+        hall.add(post);
+        const sideCope = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.12, 1.05), stoneMat);
+        sideCope.position.set(sd * 2.2, balY + 0.34, D / 2 + 0.55);
+        hall.add(sideCope);
+      }
+      const cope = new THREE.Mesh(new THREE.BoxGeometry(4.85, 0.12, 0.2), stoneMat);
+      cope.position.set(0, balY + 0.34, balFrontZ);
+      hall.add(cope);
+
+      // Roof: ridge runs along the length, so the sub-group is built the usual
+      // way and then turned a quarter turn.
+      const roofGroup = new THREE.Group();
+      const gable = new THREE.Shape();
+      gable.moveTo(-D / 2, 0); gable.lineTo(D / 2, 0); gable.lineTo(0, RISE); gable.closePath();
+      const gg = new THREE.ExtrudeGeometry(gable, { depth: W, bevelEnabled: false });
+      gg.translate(0, 0, -W / 2);
+      roofGroup.add(new THREE.Mesh(gg, civicMat));
+      const run = D / 2;
+      const slope = Math.hypot(run, RISE);
+      const pitch = Math.atan2(RISE, run);
+      const OVER = 0.6, TH = 0.22;
+      const slabGeo = new THREE.BoxGeometry(slope + OVER, TH, W + 1.0);
+      const offX = (run / slope) * (OVER / 2) + (RISE / slope) * (TH / 2);
+      const offY = -(RISE / slope) * (OVER / 2) + (run / slope) * (TH / 2);
+      for (const side of [-1, 1]) {
+        const slab = new THREE.Mesh(slabGeo, roofMat);
+        slab.position.x = side * (run / 2 + offX);
+        slab.position.y = RISE / 2 + offY;
+        slab.rotation.z = -side * pitch;
+        roofGroup.add(slab);
+      }
+      const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.24, W + 1.0), roofMat);
+      ridge.position.y = RISE + 0.08;
+      roofGroup.add(ridge);
+      roofGroup.rotation.y = Math.PI / 2;
+      roofGroup.position.y = 0.6 + EAVE;
+      hall.add(roofGroup);
+
+      for (const x of [-10, 10]) {
+        const stack = new THREE.Mesh(new THREE.BoxGeometry(1.1, 4.2, 1.1), brickMat);
+        stack.position.set(x, 0.6 + EAVE + 1.6, -2.0);
+        hall.add(stack);
+        const cap = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.24, 1.4), stoneMat);
+        cap.position.set(x, 0.6 + EAVE + 3.82, -2.0);
+        hall.add(cap);
+      }
+
+      const floor = new THREE.Mesh(new THREE.BoxGeometry(W - 2 * T, 0.1, D - 2 * T), interiorMat);
+      floor.position.y = 0.65;
+      hall.add(floor);
+      const ceiling = new THREE.Mesh(new THREE.BoxGeometry(W - 2 * T, 0.1, D - 2 * T), interiorMat);
+      ceiling.position.y = 0.6 + EAVE - 0.05;
+      hall.add(ceiling);
+
+      hall.traverse((n) => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+      hall.userData.footprint = { w: W, d: D, h: 0.6 + EAVE + RISE };
+      return hall;
+    }
+
+    // --- Cloth flag ----------------------------------------------------------
+    // 32 x 16 = 512 particles in a grid, held together by distance constraints
+    // and integrated with Verlet. Structural links join neighbours, shear links
+    // join diagonals so the sheet resists collapsing, and bend links span two
+    // cells so it does not fold into knife creases. The hoist column is pinned.
+    const FLAG_COLS = 32;
+    const FLAG_ROWS = 16;
+    const FLAG_COUNT = FLAG_COLS * FLAG_ROWS; // 512
+    const FLAG_W = 3.6;
+    const FLAG_H = 2.4;
+
+    function createFlagCloth() {
+      const dx = FLAG_W / (FLAG_COLS - 1);
+      const dy = FLAG_H / (FLAG_ROWS - 1);
+      const pos = new Float32Array(FLAG_COUNT * 3);
+      const prev = new Float32Array(FLAG_COUNT * 3);
+      const pinned = new Uint8Array(FLAG_COUNT);
+
+      for (let r = 0; r < FLAG_ROWS; r++) {
+        for (let c = 0; c < FLAG_COLS; c++) {
+          const i = (r * FLAG_COLS + c) * 3;
+          pos[i] = c * dx;
+          pos[i + 1] = -r * dy;
+          pos[i + 2] = 0;
+          prev[i] = pos[i];
+          prev[i + 1] = pos[i + 1];
+          prev[i + 2] = pos[i + 2];
+          if (c === 0) pinned[r * FLAG_COLS + c] = 1; // hoist edge on the pole
+        }
+      }
+
+      const links = [];
+      const link = (a, b) => {
+        const ax = a * 3, bx = b * 3;
+        const d = Math.hypot(pos[ax] - pos[bx], pos[ax + 1] - pos[bx + 1], pos[ax + 2] - pos[bx + 2]);
+        links.push(a, b, d);
+      };
+      for (let r = 0; r < FLAG_ROWS; r++) {
+        for (let c = 0; c < FLAG_COLS; c++) {
+          const i = r * FLAG_COLS + c;
+          if (c < FLAG_COLS - 1) link(i, i + 1);              // structural
+          if (r < FLAG_ROWS - 1) link(i, i + FLAG_COLS);
+          if (c < FLAG_COLS - 1 && r < FLAG_ROWS - 1) {        // shear
+            link(i, i + FLAG_COLS + 1);
+            link(i + 1, i + FLAG_COLS);
+          }
+          if (c < FLAG_COLS - 2) link(i, i + 2);               // bend
+          if (r < FLAG_ROWS - 2) link(i, i + FLAG_COLS * 2);
+        }
+      }
+      const linkArr = new Float32Array(links);
+
+      // Geometry: one vertex per particle, tricolour applied by column.
+      const geo = new THREE.PlaneGeometry(FLAG_W, FLAG_H, FLAG_COLS - 1, FLAG_ROWS - 1);
+      const colors = new Float32Array(FLAG_COUNT * 3);
+      const blue = new THREE.Color(0x0d2f8f);
+      const white = new THREE.Color(0xf2f2f2);
+      const red = new THREE.Color(0xd0202f);
+      for (let r = 0; r < FLAG_ROWS; r++) {
+        for (let c = 0; c < FLAG_COLS; c++) {
+          const t = c / (FLAG_COLS - 1);
+          const col = t < 1 / 3 ? blue : t < 2 / 3 ? white : red;
+          const i = (r * FLAG_COLS + c) * 3;
+          colors[i] = col.r;
+          colors[i + 1] = col.g;
+          colors[i + 2] = col.b;
+        }
+      }
+      geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+      const mat = new THREE.MeshPhongMaterial({
+        vertexColors: true,
+        side: THREE.DoubleSide,
+        shininess: 12
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true;
+
+      return { pos, prev, pinned, links: linkArr, mesh, geo, time: 0 };
+    }
+
+    const GRAVITY = -3.2;
+    const DAMPING = 0.985;
+    const SOLVER_ITERATIONS = 12; // enough to keep link strain in single digits
+
+    function updateFlag(flag, dt) {
+      const step = Math.min(dt, 1 / 60);
+      flag.time += step;
+      const { pos, prev, pinned, links } = flag;
+
+      // Wind: a steady push with gusts, always blowing.
+      const t = flag.time;
+      const gust = 0.72 + 0.28 * Math.sin(t * 1.7) + 0.16 * Math.sin(t * 4.3 + 1.2);
+      const wx = 7.1 * gust;
+      const wz = 2.6 * Math.sin(t * 0.9) * gust;
+      const wy = 1.4 * Math.sin(t * 2.6);
+
+      const dt2 = step * step;
+      for (let i = 0; i < FLAG_COUNT; i++) {
+        const p = i * 3;
+        if (pinned[i]) continue;
+        // Per-particle jitter so the sheet ripples rather than moving as a slab.
+        const ripple = Math.sin(t * 6 + i * 0.37) * 0.45;
+        const ax = wx + ripple;
+        const ay = GRAVITY + wy;
+        const az = wz + Math.cos(t * 5 + i * 0.21) * 0.54;
+        for (let k = 0; k < 3; k++) {
+          const cur = pos[p + k];
+          const acc = k === 0 ? ax : k === 1 ? ay : az;
+          pos[p + k] = cur + (cur - prev[p + k]) * DAMPING + acc * dt2;
+          prev[p + k] = cur;
+        }
+      }
+
+      for (let iter = 0; iter < SOLVER_ITERATIONS; iter++) {
+        for (let l = 0; l < links.length; l += 3) {
+          const a = links[l] * 3;
+          const b = links[l + 1] * 3;
+          const rest = links[l + 2];
+          const dx = pos[b] - pos[a];
+          const dy = pos[b + 1] - pos[a + 1];
+          const dz = pos[b + 2] - pos[a + 2];
+          const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-6;
+          const diff = ((d - rest) / d) * 0.5;
+          const ox = dx * diff, oy = dy * diff, oz = dz * diff;
+          const pa = pinned[links[l]], pb = pinned[links[l + 1]];
+          if (!pa) { pos[a] += ox; pos[a + 1] += oy; pos[a + 2] += oz; }
+          if (!pb) { pos[b] -= ox; pos[b + 1] -= oy; pos[b + 2] -= oz; }
+        }
+      }
+
+      const attr = flag.geo.attributes.position;
+      attr.array.set(pos);
+      attr.needsUpdate = true;
+      flag.geo.computeVertexNormals();
+    }
+
+    function createTerrace(units, opts = {}) {
+      const D = opts.depth || 8.5;
+      const T = 0.34;
+      const row = new THREE.Group();
+
+      const total = units.reduce((a, u) => a + u.width, 0);
+      let cursor = -total / 2;
+
+      units.forEach((u, i) => {
+        const W = u.width;
+        const EAVE = u.eave || 5.6;
+        const RISE = u.rise || 2.3;
+        const cx = cursor + W / 2;
+        cursor += W;
+
+        const wallMat = u.plaster ? plasterMat : brickMat;
+        const roofMatUse = new THREE.MeshPhongMaterial({
+          color: u.roof || 0x59453d,
+          shininess: 6
+        });
+        const trimMat = u.trim
+          ? new THREE.MeshPhongMaterial({ color: u.trim, shininess: 24 })
+          : undefined;
+
+        const unit = new THREE.Group();
+        unit.position.x = cx;
+        row.add(unit);
+
+        const plinth = new THREE.Mesh(new THREE.BoxGeometry(W, 0.45, D + 0.3), stoneMat);
+        plinth.position.y = 0.225;
+        unit.add(plinth);
+
+        // Street elevation: shop units get a display window, houses get a door
+        // flanked by a window.
+        const GROUND = u.shop ? 3.1 : 2.75;
+        const front = u.shop
+          ? [
+              { x: -W / 2 + 2.1, w: Math.min(3.0, W - 2.6), h: 2.0, sill: 0.72,
+                barsV: 2, barsH: 1 },
+              { x: W / 2 - 1.0, w: 1.0, h: 2.1, sill: 0, door: true },
+              { x: -W / 2 + 1.4, w: 0.95, h: 1.25, sill: GROUND + 0.8 },
+              { x: W / 2 - 1.4, w: 0.95, h: 1.25, sill: GROUND + 0.8 }
+            ]
+          : [
+              { x: -W / 2 + 1.3, w: 1.0, h: 2.05, sill: 0, door: true },
+              { x: W / 2 - 1.5, w: 1.0, h: 1.25, sill: 1.0 },
+              { x: -W / 2 + 1.4, w: 0.95, h: 1.25, sill: GROUND + 0.8 },
+              { x: W / 2 - 1.4, w: 0.95, h: 1.25, sill: GROUND + 0.8 }
+            ];
+
+        const paintMat = u.paint
+          ? new THREE.MeshPhongMaterial({ color: u.paint, shininess: 26 })
+          : trimMat;
+
+        const fw = buildWall(W, EAVE, front, wallMat, T, u.shop ? paintMat : trimMat);
+        fw.position.set(0, 0.45, D / 2 - T / 2);
+        unit.add(fw);
+
+        const bw = buildWall(W, EAVE, [
+          { x: 0, w: 1.0, h: 2.05, sill: 0, door: true },
+          { x: -W / 2 + 1.5, w: 0.95, h: 1.2, sill: GROUND + 0.8 }
+        ], wallMat, T, trimMat);
+        bw.position.set(0, 0.45, -(D / 2 - T / 2));
+        bw.rotation.y = Math.PI;
+        unit.add(bw);
+
+        // Party walls: plain, no openings. Only the row ends are exterior.
+        for (const side of [-1, 1]) {
+          const isEnd = (side === -1 && i === 0) || (side === 1 && i === units.length - 1);
+          const party = new THREE.Mesh(
+            new THREE.BoxGeometry(T, EAVE, D - 2 * T),
+            isEnd ? wallMat : stoneMat
+          );
+          party.position.set(side * (W / 2 - T / 2), 0.45 + EAVE / 2, 0);
+          unit.add(party);
+        }
+
+        // Gable facing the street, with its own roof slopes.
+        const gable = new THREE.Shape();
+        gable.moveTo(-W / 2, 0);
+        gable.lineTo(W / 2, 0);
+        gable.lineTo(0, RISE);
+        gable.closePath();
+        const gg = new THREE.ExtrudeGeometry(gable, { depth: D, bevelEnabled: false });
+        gg.translate(0, 0, -D / 2);
+        const gm = new THREE.Mesh(gg, wallMat);
+        gm.position.y = 0.45 + EAVE;
+        unit.add(gm);
+
+        const run = W / 2;
+        const slope = Math.hypot(run, RISE);
+        const pitch = Math.atan2(RISE, run);
+        const OVER = 0.12; // tight overhang; neighbours are right there
+        const TH = 0.16;
+        const slabGeo = new THREE.BoxGeometry(slope + OVER, TH, D + 0.5);
+        const offX = (run / slope) * (OVER / 2) + (RISE / slope) * (TH / 2);
+        const offY = -(RISE / slope) * (OVER / 2) + (run / slope) * (TH / 2);
+        for (const side of [-1, 1]) {
+          const slab = new THREE.Mesh(slabGeo, roofMatUse);
+          slab.position.x = side * (run / 2 + offX);
+          slab.position.y = 0.45 + EAVE + RISE / 2 + offY;
+          slab.rotation.z = -side * pitch;
+          unit.add(slab);
+        }
+
+        const chTop = 0.45 + EAVE + RISE + 0.9;
+        const chBase = 0.45 + EAVE - 0.8;
+        const stack = new THREE.Mesh(
+          new THREE.BoxGeometry(0.7, chTop - chBase, 0.7),
+          brickMat
+        );
+        stack.position.set(W / 2 - 0.6, (chTop + chBase) / 2, -D / 2 + 1.4);
+        unit.add(stack);
+
+        const floor = new THREE.Mesh(
+          new THREE.BoxGeometry(W - 2 * T, 0.1, D - 2 * T),
+          interiorMat
+        );
+        floor.position.y = 0.5;
+        unit.add(floor);
+        const ceil = new THREE.Mesh(
+          new THREE.BoxGeometry(W - 2 * T, 0.1, D - 2 * T),
+          interiorMat
+        );
+        ceil.position.y = 0.45 + EAVE - 0.05;
+        unit.add(ceil);
+      });
+
+      row.traverse((node) => {
+        if (node.isMesh) {
+          node.castShadow = true;
+          node.receiveShadow = true;
+        }
+      });
+      row.userData.footprint = {
+        w: total,
+        d: D,
+        h: 0.45 + Math.max(...units.map((u) => (u.eave || 5.6) + (u.rise || 2.3)))
+      };
+      return row;
+    }
+
+    function createHouse(opts = {}) {
+      const W = opts.width || 8;
+      const D = opts.depth || 10;
+      const EAVE = opts.eave || 5.6;
+      const RISE = opts.rise || 2.6;
+      const wallMat = opts.plaster ? plasterMat : brickMat;
+      const roofMatUse = opts.roof
+        ? new THREE.MeshPhongMaterial({ color: opts.roof, shininess: 6 })
+        : roofMat;
+      const trimMat = opts.trim
+        ? new THREE.MeshPhongMaterial({ color: opts.trim, shininess: 24 })
+        : undefined;
+
+      const house = new THREE.Group();
+
+      // Stone plinth the walls sit on.
+      const plinth = new THREE.Mesh(new THREE.BoxGeometry(W + 0.3, 0.45, D + 0.3), stoneMat);
+      plinth.position.y = 0.225;
+      house.add(plinth);
+
+      // --- Walls -----------------------------------------------------------
+      // Four panels with real holes punched through rather than one solid box,
+      // so the windows genuinely see into the building.
+      const WALL_T = 0.34;
+      const WIN_W = 1.0;
+      const WIN_H = 1.25;
+      const SILL_LOW = 0.95;
+      const SILL_HIGH = 3.55;
+
+      const win = (x, sill) => ({ x, w: WIN_W, h: WIN_H, sill });
+      const frontOpenings = [
+        { x: 0, w: 1.05, h: 2.05, sill: 0, door: true },
+        win(-2.5, SILL_LOW), win(2.5, SILL_LOW),
+        win(-2.5, SILL_HIGH), win(0, SILL_HIGH), win(2.5, SILL_HIGH)
+      ];
+      const backOpenings = [
+        win(-2.5, SILL_LOW), win(2.5, SILL_LOW),
+        win(-2.5, SILL_HIGH), win(2.5, SILL_HIGH)
+      ];
+      const sideOpenings = [win(0, SILL_LOW), win(-2.6, SILL_HIGH), win(2.6, SILL_HIGH)];
+
+      const front = buildWall(W, EAVE, frontOpenings, wallMat, WALL_T, trimMat);
+      front.position.set(0, 0.45, D / 2 - WALL_T / 2);
+      house.add(front);
+
+      const back = buildWall(W, EAVE, backOpenings, wallMat, WALL_T, trimMat);
+      back.position.set(0, 0.45, -(D / 2 - WALL_T / 2));
+      back.rotation.y = Math.PI;
+      house.add(back);
+
+      for (const side of [-1, 1]) {
+        const wall = buildWall(D - 2 * WALL_T, EAVE, sideOpenings, wallMat, WALL_T, trimMat);
+        wall.position.set(side * (W / 2 - WALL_T / 2), 0.45, 0);
+        wall.rotation.y = (side * Math.PI) / 2;
+        house.add(wall);
+      }
+
+      // Shutters flanking the front windows.
+      if (opts.shutters) {
+        const shMat = trimMat || timberMat;
+        for (const [x, sill] of [[-2.5, SILL_LOW], [2.5, SILL_LOW],
+                                 [-2.5, SILL_HIGH], [0, SILL_HIGH], [2.5, SILL_HIGH]]) {
+          for (const sd of [-1, 1]) {
+            const sh = new THREE.Mesh(new THREE.BoxGeometry(0.44, WIN_H, 0.06), shMat);
+            sh.position.set(x + sd * 0.74, 0.45 + sill + WIN_H / 2, D / 2 + 0.04);
+            house.add(sh);
+          }
+        }
+      }
+
+      // Dark interior floor so looking through a window shows a room, not sky.
+      const floor = new THREE.Mesh(
+        new THREE.BoxGeometry(W - 2 * WALL_T, 0.1, D - 2 * WALL_T),
+        interiorMat
+      );
+      floor.position.y = 0.5;
+      house.add(floor);
+
+      const ceiling = new THREE.Mesh(
+        new THREE.BoxGeometry(W - 2 * WALL_T, 0.1, D - 2 * WALL_T),
+        interiorMat
+      );
+      ceiling.position.y = 0.45 + EAVE - 0.05;
+      house.add(ceiling);
+
+      // Gable block: a triangular prism spanning the length, which gives both
+      // gable end walls and fills the attic in one piece.
+      const gable = new THREE.Shape();
+      gable.moveTo(-W / 2, 0);
+      gable.lineTo(W / 2, 0);
+      gable.lineTo(0, RISE);
+      gable.closePath();
+      const gableGeo = new THREE.ExtrudeGeometry(gable, { depth: D, bevelEnabled: false });
+      gableGeo.translate(0, 0, -D / 2);
+      const gableMesh = new THREE.Mesh(gableGeo, wallMat);
+      gableMesh.position.y = 0.45 + EAVE;
+      house.add(gableMesh);
+
+      // Roof slabs, one per slope, overhanging the walls at the eaves.
+      const run = W / 2;
+      const slope = Math.hypot(run, RISE);
+      const pitch = Math.atan2(RISE, run);
+      const OVER = 0.45;
+      const TH = 0.18;
+      const slabGeo = new THREE.BoxGeometry(slope + OVER, TH, D + 0.7);
+      // Slab sits on the slope midpoint, pushed OVER/2 down-slope for the eaves
+      // overhang and TH/2 along the outward normal so its underside meets the wall.
+      const offX = (run / slope) * (OVER / 2) + (RISE / slope) * (TH / 2);
+      const offY = -(RISE / slope) * (OVER / 2) + (run / slope) * (TH / 2);
+      for (const side of [-1, 1]) {
+        const slab = new THREE.Mesh(slabGeo, roofMatUse);
+        slab.position.x = side * (run / 2 + offX);
+        slab.position.y = 0.45 + EAVE + RISE / 2 + offY;
+        slab.rotation.z = -side * pitch;
+        house.add(slab);
+      }
+
+      // Ridge cap.
+      const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.2, D + 0.7), roofMatUse);
+      ridge.position.y = 0.45 + EAVE + RISE + 0.06;
+      house.add(ridge);
+
+      // Chimney: rises from inside the roof to 1.2 m above the ridge.
+      const chTop = 0.45 + EAVE + RISE + 1.2;
+      const chBase = 0.45 + EAVE - 1.2;
+      const stack = new THREE.Mesh(
+        new THREE.BoxGeometry(0.95, chTop - chBase, 0.95),
+        brickMat
+      );
+      stack.position.set(-W / 2 + 1.5, (chTop + chBase) / 2, -D / 2 + 1.8);
+      house.add(stack);
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.22, 1.2), stoneMat);
+      cap.position.set(stack.position.x, chTop + 0.11, stack.position.z);
+      house.add(cap);
+
+      house.traverse((node) => {
+        if (node.isMesh) {
+          node.castShadow = true;
+          node.receiveShadow = true;
+        }
+      });
+      house.userData.footprint = { w: W, d: D, h: 0.45 + EAVE + RISE };
+      return house;
+    }
+
+    function createUnit(color) {
+      const unit = new THREE.Group();
+      const bodyColor = new THREE.Color(color);
+      const jointColor = bodyColor.clone().multiplyScalar(0.62);
+      const bodyMat = new THREE.MeshPhongMaterial({ color: bodyColor });
+      const jointMat = new THREE.MeshPhongMaterial({ color: jointColor });
+      const whiteMat = new THREE.MeshPhongMaterial({ color: 0xffffff });
+      const blackMat = new THREE.MeshPhongMaterial({ color: 0x050608 });
+      const woodMat = new THREE.MeshPhongMaterial({ color: 0x7a461f, shininess: 18 });
+      const darkWoodMat = new THREE.MeshPhongMaterial({ color: 0x4b2b16, shininess: 12 });
+      const metalMat = new THREE.MeshPhongMaterial({ color: 0x252a2e, shininess: 85 });
+
+      const torsoGroup = new THREE.Group();
+      torsoGroup.position.set(0, 2.5, 0);
+      unit.add(torsoGroup);
+
+      const head = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), bodyMat);
+      head.position.y = 4.5;
+      torsoGroup.add(head);
+
+      for (const x of [-0.25, 0.25]) {
+        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 8), whiteMat);
+        eye.position.set(x, 4.75, 0.9);
+        const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.075, 8, 8), blackMat);
+        pupil.position.z = 0.1;
+        eye.add(pupil);
+        torsoGroup.add(eye);
+      }
+
+      // First-person camera anchor: midway between the eyes, pushed slightly
+      // forward of the face so the head mesh sits behind the near plane.
+      const eyePoint = new THREE.Object3D();
+      eyePoint.position.set(0, 4.75, 1.15);
+      torsoGroup.add(eyePoint);
+
+      // --- M1-style steel helmet: domed shell, flared rim, cargo netting on
+      // top, worn tipped back off the brow. Parented to the head so it rides
+      // along with any head motion.
+      const helmetMat = new THREE.MeshPhongMaterial({ color: 0x4a5236, shininess: 8 });
+      const webMat = new THREE.MeshPhongMaterial({ color: 0x2f3524, shininess: 4 });
+
+      const helmet = new THREE.Group();
+      helmet.rotation.x = -0.4373; // ~25deg back: front rides up, back sits low
+      head.add(helmet);
+
+      const SHELL_R = 1.12;
+      const DOME_Y = 0.05; // low enough that the shell rests on the skull
+      const SHELL_SWEEP = Math.PI * 0.46; // shallower bowl = less of the head covered
+
+      const shell = new THREE.Mesh(
+        new THREE.SphereGeometry(SHELL_R, 24, 16, 0, Math.PI * 2, 0, SHELL_SWEEP),
+        helmetMat
+      );
+      shell.position.y = DOME_Y;
+      helmet.add(shell);
+
+      // Flared rim around the open bottom edge of the shell.
+      const rim = new THREE.Mesh(
+        new THREE.TorusGeometry(SHELL_R * Math.sin(SHELL_SWEEP), 0.075, 10, 32),
+        helmetMat
+      );
+      rim.rotation.x = Math.PI / 2;
+      rim.position.y = DOME_Y + SHELL_R * Math.cos(SHELL_SWEEP);
+      helmet.add(rim);
+
+      // Netting: latitude bands plus front-to-back arcs, sitting just proud of
+      // the shell so it reads as webbing stretched tight over the steel.
+      for (const dy of [0.18, 0.38, 0.58, 0.78, 0.94]) {
+        const r = Math.sqrt(SHELL_R * SHELL_R - dy * dy) * 1.012;
+        const band = new THREE.Mesh(new THREE.TorusGeometry(r, 0.024, 6, 28), webMat);
+        band.rotation.x = Math.PI / 2;
+        band.position.y = DOME_Y + dy;
+        helmet.add(band);
+      }
+
+      const ARC_COUNT = 6;
+      for (let i = 0; i < ARC_COUNT; i++) {
+        // Arc spans the shell edge, up over the crown, down to the far edge.
+        const arc = new THREE.Mesh(
+          new THREE.TorusGeometry(SHELL_R * 1.012, 0.024, 6, 28, 2 * SHELL_SWEEP),
+          webMat
+        );
+        arc.rotation.z = Math.PI / 2 - SHELL_SWEEP; // start at the rim, not the equator
+        const pivot = new THREE.Group();
+        pivot.position.y = DOME_Y;
+        pivot.rotation.y = (i * Math.PI) / ARC_COUNT;
+        pivot.add(arc);
+        helmet.add(pivot);
+      }
+
+      helmet.traverse((node) => {
+        if (node.isMesh) {
+          node.castShadow = true;
+          node.receiveShadow = true;
+        }
+      });
+
+      const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 1, 12), bodyMat);
+      neck.position.set(0, 3.5, 0);
+      torsoGroup.add(neck);
+
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(2.22, 3, 1), bodyMat);
+      torso.position.set(0, 1.5, 0);
+      torsoGroup.add(torso);
+
+      function createRifle() {
+        const rifle = new THREE.Group();
+        // Initial placement only; position is driven by the right hand each
+        // frame (see RIFLE_GRIP_OFFSET), with the foregrip sitting in the hand.
+        rifle.position.set(0.338, 2.579, 2.242);
+        rifle.rotation.x = -0.03;
+
+        // Buttstock: narrow wrist behind the receiver, widening into the butt,
+        // capped with a butt plate. Each section drops slightly below the bore
+        // line, the way a real stock has drop at the comb and heel.
+        const wrist = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.30, 0.54), woodMat);
+        wrist.position.set(0, -0.14, -0.78);
+        wrist.rotation.x = 0.20;
+        rifle.add(wrist);
+
+        const butt = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.52, 0.74), woodMat);
+        butt.position.set(0, -0.30, -1.34);
+        butt.rotation.x = 0.12;
+        rifle.add(butt);
+
+        const buttPlate = new THREE.Mesh(new THREE.BoxGeometry(0.40, 0.56, 0.07), darkWoodMat);
+        buttPlate.position.set(0, -0.345, -1.70);
+        buttPlate.rotation.x = 0.12;
+        rifle.add(buttPlate);
+
+        const body = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.36, 1.45), woodMat);
+        body.position.set(0, 0.02, 0.05);
+        rifle.add(body);
+
+        const foregrip = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.28, 1.05), darkWoodMat);
+        foregrip.position.set(0, -0.08, 0.94);
+        rifle.add(foregrip);
+
+        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.105, 0.105, 2.15, 16), metalMat);
+        barrel.rotation.x = Math.PI / 2;
+        barrel.position.set(0, 0.14, 1.86);
+        rifle.add(barrel);
+
+        const muzzle = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.22, 16), metalMat);
+        muzzle.rotation.x = Math.PI / 2;
+        muzzle.position.set(0, 0.14, 2.98);
+        rifle.add(muzzle);
+
+        const sightBack = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.18, 0.18), metalMat);
+        sightBack.position.set(0, 0.35, -0.1);
+        rifle.add(sightBack);
+
+        const sightFront = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.22, 0.12), metalMat);
+        sightFront.position.set(0, 0.35, 2.38);
+        rifle.add(sightFront);
+
+        const triggerGuard = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.035, 8, 16, Math.PI), metalMat);
+        triggerGuard.rotation.set(Math.PI / 2, 0, Math.PI);
+        triggerGuard.position.set(0, -0.24, -0.26);
+        rifle.add(triggerGuard);
+
+        const trigger = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.22, 0.07), metalMat);
+        trigger.position.set(0, -0.31, -0.2);
+        rifle.add(trigger);
+
+        // Anchor at the mouth of the barrel; rounds spawn from here.
+        const muzzlePoint = new THREE.Object3D();
+        muzzlePoint.position.set(0, 0.14, 3.12);
+        rifle.add(muzzlePoint);
+        rifle.userData.muzzlePoint = muzzlePoint;
+
+        rifle.traverse((node) => {
+          if (node.isMesh) {
+            node.castShadow = true;
+            node.receiveShadow = true;
+          }
+        });
+        return rifle;
+      }
+
+      const rifle = createRifle();
+      torsoGroup.add(rifle);
+
+      const upperArmGeo = new THREE.CylinderGeometry(0.25, 0.25, 1.75, 8);
+      const lowerArmGeo = new THREE.CylinderGeometry(0.25, 0.25, 1.75, 8);
+
+      function createArm(side) {
+        const shoulder = new THREE.Group();
+        shoulder.position.set(side * 1.48, 2.25, 0);
+        shoulder.rotation.x = -0.3;
+        shoulder.rotation.z = side * 0.3;
+        torsoGroup.add(shoulder);
+
+        shoulder.add(new THREE.Mesh(new THREE.SphereGeometry(0.4, 10, 8), jointMat));
+
+        const upperArm = new THREE.Mesh(upperArmGeo, bodyMat);
+        upperArm.scale.y = 1.05;
+        upperArm.position.y = -0.91875;
+        shoulder.add(upperArm);
+
+        const elbow = new THREE.Group();
+        elbow.position.y = -1.8375;
+        elbow.rotation.x = -0.4;
+        shoulder.add(elbow);
+
+        elbow.add(new THREE.Mesh(new THREE.SphereGeometry(0.3, 10, 8), jointMat));
+        const lowerArm = new THREE.Mesh(lowerArmGeo, bodyMat);
+        lowerArm.position.y = -0.875;
+        elbow.add(lowerArm);
+
+        const hand = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.4, 0.3), bodyMat);
+        hand.position.y = -1.95;
+        elbow.add(hand);
+        return { shoulder, elbow, hand };
+      }
+
+      const leftArm = createArm(-1);
+      const rightArm = createArm(1);
+      const upperLegGeo = new THREE.CylinderGeometry(0.3, 0.3, 1.6875, 8);
+      const lowerLegGeo = new THREE.CylinderGeometry(0.3, 0.3, 1.6875, 8);
+
+      function createLeg(side) {
+        const hip = new THREE.Group();
+        hip.position.set(side * 0.6, 2.5, 0);
+        unit.add(hip);
+
+        hip.add(new THREE.Mesh(new THREE.CylinderGeometry(0.325, 0.325, 0.4, 8), jointMat));
+        const upperLeg = new THREE.Mesh(upperLegGeo, bodyMat);
+        upperLeg.position.y = -0.84375;
+        upperLeg.scale.set(1.15, 1.15, 1.15);
+        hip.add(upperLeg);
+
+        const knee = new THREE.Group();
+        knee.position.y = -1.6875;
+        knee.rotation.x = 0.15;
+        hip.add(knee);
+
+        knee.add(new THREE.Mesh(new THREE.SphereGeometry(0.325, 10, 8), jointMat));
+        const lowerLeg = new THREE.Mesh(lowerLegGeo, bodyMat);
+        lowerLeg.position.y = -0.84375;
+        lowerLeg.scale.set(1.15, 1.15, 1.15);
+        knee.add(lowerLeg);
+
+        const foot = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.75), bodyMat);
+        foot.position.set(0, -1.8, 0.2);
+        knee.add(foot);
+        return { hip, knee, foot };
+      }
+
+      const leftLeg = createLeg(-1);
+      const rightLeg = createLeg(1);
+
+      unit.userData = {
+        torsoGroup,
+        leftArm: leftArm.shoulder,
+        rightArm: rightArm.shoulder,
+        leftElbow: leftArm.elbow,
+        rightElbow: rightArm.elbow,
+        rightHand: rightArm.hand,
+        eyePoint,
+        leftLeg: leftLeg.hip,
+        rightLeg: rightLeg.hip,
+        leftKnee: leftLeg.knee,
+        rightKnee: rightLeg.knee,
+        leftFoot: leftLeg.foot,
+        rightFoot: rightLeg.foot,
+        rifle
+      };
+
+      unit.traverse((node) => {
+        if (node.isMesh) {
+          node.castShadow = true;
+          node.receiveShadow = true;
+        }
+      });
+      return unit;
+    }
+
+    // --- Variant catalogue --------------------------------------------------
+    // Four of each type. Same silhouette, different proportions, materials and
+    // paint — the parameterisation that lets a handful of types fill a village.
+    const HOUSE_VARIANTS = [
+      { width: 8.0, depth: 10.0, eave: 5.6, rise: 2.6, roof: 0x4d4a4e, trim: 0x3d3227 },
+      { width: 7.0, depth: 9.0, eave: 5.2, rise: 2.4, plaster: true, roof: 0x6b4433,
+        trim: 0x2f4a35, shutters: true },
+      { width: 9.0, depth: 11.0, eave: 6.1, rise: 3.0, roof: 0x7a4a38, trim: 0x40515c },
+      { width: 7.5, depth: 9.5, eave: 5.4, rise: 3.1, plaster: true, roof: 0x565259,
+        trim: 0x5d2b2b, shutters: true }
+    ];
+
+    const SHOP_VARIANTS = [
+      { width: 6.5, paint: 0x2f4a35, awning: 0x2f4a35, roof: 0x4d4a4e, plaster: true,
+        shutters: true },
+      { width: 7.0, paint: 0x5d2b2b, awning: 0x5d2b2b, roof: 0x6b4433 },
+      { width: 6.0, paint: 0x2b4256, awning: 0x2b4256, roof: 0x565259, plaster: true,
+        shutters: true },
+      { width: 7.5, paint: 0x8a6a24, awning: 0x8a6a24, roof: 0x7a4a38 }
+    ];
+
+    // Houses in a row facing the spawn point.
+    HOUSE_VARIANTS.forEach((opts, i) => {
+      placeBuilding(createHouse(opts), -33 + i * 15, 24, Math.PI);
+    });
+
+    // Shops opposite them.
+    SHOP_VARIANTS.forEach((opts, i) => {
+      placeBuilding(createShop(opts), -24 + i * 13, -24);
+    });
+
+    // A row of five: two shops, three houses, all slightly different.
+    const terrace = createTerrace([
+      { width: 6.2, eave: 5.9, rise: 2.5, shop: true, paint: 0x2b4256, roof: 0x4d4a4e,
+        trim: 0x2b4256 },
+      { width: 5.4, eave: 5.5, rise: 2.2, plaster: true, roof: 0x6b4433, trim: 0x3d3227 },
+      { width: 6.0, eave: 6.2, rise: 2.7, roof: 0x7a4a38, trim: 0x2f4a35 },
+      { width: 5.2, eave: 5.4, rise: 2.1, plaster: true, roof: 0x565259, trim: 0x5d2b2b },
+      { width: 6.6, eave: 5.8, rise: 2.4, shop: true, paint: 0x8a6a24, roof: 0x59453d,
+        trim: 0x8a6a24 }
+    ]);
+    placeBuilding(terrace, -14, 46, Math.PI);
+
+    // Four café-tabac variants, on their own row clear of the shops.
+    const CAFE_VARIANTS = [
+      { width: 8.5, paint: 0x7a2f2f, awning: 0x7a2f2f, roof: 0x4d4a4e, plaster: true,
+        shutters: true, awningProj: 2.3, rail: 0x394034, tables: 3 },
+      { width: 9.2, paint: 0x1f4d47, awning: 0x1f4d47, roof: 0x6b4433,
+        awningProj: 2.7, rail: 0x1f4d47, tables: 4, terraceDepth: 3.4 },
+      { width: 8.0, paint: 0x2b3f63, awning: 0xe4dcc6, roof: 0x565259, plaster: true,
+        awningProj: 2.0, rail: 0x2b3f63, tables: 2, terraceDepth: 2.6 },
+      { width: 9.8, paint: 0x8a5a1e, awning: 0x8a5a1e, roof: 0x7a4a38,
+        shutters: true, awningProj: 2.9, rail: 0x40352a, tables: 4, terraceDepth: 3.6 }
+    ];
+
+    CAFE_VARIANTS.forEach((opts, i) => {
+      placeBuilding(createShop({ ...opts, cafe: true }), -30 + i * 20, -46);
+    });
+
+    // --- Place de la Mairie --------------------------------------------------
+    // Set well back from the town so it reads as a landmark across the fields.
+    const HALL_Z = -120;
+    const CY_W = 46;        // courtyard width
+    const CY_D = 30;        // courtyard depth in front of the building
+    const townHall = placeBuilding(createTownHall(), 0, HALL_Z);
+
+    const courtyardZ = HALL_Z + 7.5 + CY_D / 2;
+    const HALL_FRONT = HALL_Z + 7.5;        // front face of the building
+    const GATE_Z = courtyardZ + CY_D / 2;   // fence line with the gate
+
+    // Only a path and an apron are paved; the rest of the courtyard is grass.
+    const path = new THREE.Mesh(
+      new THREE.BoxGeometry(4.5, 0.08, GATE_Z - (HALL_FRONT + 2.5)),
+      paveMat
+    );
+    path.position.set(0, 0.04, (GATE_Z + HALL_FRONT + 2.5) / 2);
+    path.receiveShadow = true;
+    scene.add(path);
+
+    const apron = new THREE.Mesh(new THREE.BoxGeometry(14, 0.08, 5), paveMat);
+    apron.position.set(0, 0.04, HALL_FRONT + 2.5);
+    apron.receiveShadow = true;
+    scene.add(apron);
+
+    // Fence: front run with the gate, two sides, and short returns closing the
+    // gap between the building's corners and the side runs at the back.
+    const fenceFront = createFenceRun(CY_W, 7);
+    placeBuilding(fenceFront, 0, GATE_Z);
+    for (const sd of [-1, 1]) {
+      const side = createFenceRun(CY_D);
+      placeBuilding(side, (sd * CY_W) / 2, courtyardZ, Math.PI / 2);
+
+      const HALL_HALF = 15;
+      const gap = CY_W / 2 - HALL_HALF;
+      const closer = createFenceRun(gap);
+      placeBuilding(closer, sd * (HALL_HALF + gap / 2), HALL_FRONT);
+    }
+
+    // Trees, all comfortably inside the railings and clear of the path.
+    const treeSpots = [
+      [-17, 4], [-17, -6], [17, 4], [17, -6],
+      [-10, 10], [10, 10], [-19, 11], [19, 11],
+      [-11, -9], [11, -9]
+    ];
+    treeSpots.forEach(([x, dz], i) => {
+      const tree = createTree(0.85 + ((i * 37) % 40) / 100);
+      tree.position.set(x, 0, courtyardZ + dz);
+      tree.rotation.y = i * 1.1;
+      scene.add(tree);
+    });
+
+    // Bushes hugging the railings, gate left clear.
+    for (let i = 0; i < 16; i++) {
+      const t = i / 15;
+      const x = -CY_W / 2 + 1.2 + t * (CY_W - 2.4);
+      if (Math.abs(x) < 5) continue;
+      const bush = createBush(0.6 + ((i * 53) % 30) / 100);
+      bush.position.set(x, 0, GATE_Z - 1.5);
+      scene.add(bush);
+    }
+    for (const sd of [-1, 1]) {
+      for (let i = 0; i < 7; i++) {
+        const bush = createBush(0.55 + ((i * 41) % 30) / 100);
+        bush.position.set(sd * (CY_W / 2 - 1.5), 0, HALL_FRONT + 3 + i * 3.8);
+        scene.add(bush);
+      }
+    }
+
+    // --- Flagpole ------------------------------------------------------------
+    const POLE_H = 14;
+    const poleMat = new THREE.MeshPhongMaterial({ color: 0xdedad0, shininess: 60 });
+    const flagpole = new THREE.Group();
+    const poleBase = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.95, 0.7, 12), stoneMat);
+    poleBase.position.y = 0.35;
+    flagpole.add(poleBase);
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.13, POLE_H, 12), poleMat);
+    pole.position.y = 0.7 + POLE_H / 2;
+    flagpole.add(pole);
+    const finial = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), brassMat);
+    finial.position.y = 0.7 + POLE_H + 0.16;
+    flagpole.add(finial);
+    flagpole.traverse((n) => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+    flagpole.position.set(0, 0, courtyardZ + 2);
+    scene.add(flagpole);
+
+    const flag = createFlagCloth();
+    flag.mesh.position.set(0.12, 0.7 + POLE_H - 0.35, courtyardZ + 2);
+    scene.add(flag.mesh);
+
+    // --- Barns (enterable) ---------------------------------------------------
+    const BARN_VARIANTS = [
+      { width: 12, depth: 20, eave: 6.2, rise: 4.2, roof: 0x4f463a, doorWidth: 4.4 },
+      { width: 10, depth: 16, eave: 5.6, rise: 3.6, roof: 0x5c4a35, doorWidth: 3.8,
+        doorHeight: 4.0 },
+      { width: 14, depth: 22, eave: 6.8, rise: 4.8, roof: 0x3f3a33, brick: true,
+        doorWidth: 5.2, doorHeight: 5.2 }
+    ];
+    BARN_VARIANTS.forEach((opts, i) => {
+      placeBuilding(createBarn(opts), -95 + i * 30, 60, i === 1 ? Math.PI : 0);
+    });
+
+    // --- Écoles --------------------------------------------------------------
+    const SCHOOL_VARIANTS = [
+      { width: 28, depth: 11, bays: 9, roof: 0x4d4a4e },
+      { width: 24, depth: 10, bays: 7, rise: 2.7, plaster: true, roof: 0x6b4433 },
+      { width: 32, depth: 12, bays: 11, rise: 3.4, roof: 0x565259 }
+    ];
+    SCHOOL_VARIANTS.forEach((opts, i) => {
+      const sc = placeBuilding(createSchool(opts), 95, -40 + i * 40, -Math.PI / 2);
+      // Walled yard in front of each school, gate facing the town.
+      const yardW = opts.width;
+      const yardD = 18;
+      const yz = -40 + i * 40;
+      const fenceA = createFenceRun(yardW, 5);
+      placeBuilding(fenceA, 95 - yardD - 6.5, yz, Math.PI / 2);
+      for (const sd of [-1, 1]) {
+        const run = createFenceRun(yardD + 6.5);
+        placeBuilding(run, 95 - (yardD + 6.5) / 2, yz + (sd * yardW) / 2);
+      }
+      for (let t = 0; t < 4; t++) {
+        const tree = createTree(0.8 + ((t * 29) % 30) / 100);
+        tree.position.set(95 - 8 - t * 4.5, 0, yz + (t % 2 ? 1 : -1) * (yardW / 2 - 3));
+        scene.add(tree);
+      }
+    });
+
+    // --- Water tower ---------------------------------------------------------
+    placeBuilding(createWaterTower({ color: 0x6b7a6f }), 74, 84);
+
+    // --- Farms ---------------------------------------------------------------
+    // House closing the north side of a small walled yard, with a well and
+    // scattered planting. Layout details are jittered by the seeded RNG.
+    function placeFarm(x, z, opts = {}) {
+      const yardW = opts.yardW || 20;
+      const yardD = opts.yardD || 14;
+      placeBuilding(createFarmhouse(opts), x, z, Math.PI);
+
+      const yardZ = z - 4.0 - yardD / 2;
+      placeBuilding(
+        createCourtyardWall(yardW, yardD, { gate: opts.gate || 3.8, height: opts.wallH || 2.0 }),
+        x, yardZ, Math.PI
+      );
+      placeBuilding(createWell(), x + rand(3.5, 6.5) * pick([-1, 1]), yardZ + rand(-1, 3));
+
+      for (let i = 0; i < 5; i++) {
+        const bush = createBush(rand(0.5, 0.95));
+        bush.position.set(x + rand(-yardW / 2 + 1.5, yardW / 2 - 1.5), 0, yardZ + rand(-5, 5));
+        scene.add(bush);
+      }
+      for (let i = 0; i < 5; i++) {
+        const tree = createTree(rand(0.8, 1.35));
+        tree.position.set(
+          x + pick([-1, 1]) * rand(yardW / 2 + 2, yardW / 2 + 9),
+          0,
+          z - rand(0, 26)
+        );
+        tree.rotation.y = rand(0, 6.28);
+        scene.add(tree);
+      }
+    }
+
+    const FARM_VARIANTS = [
+      { width: 16, eave: 4.5, rise: 2.9, roof: 0x6b5340, yardW: 20, yardD: 14 },
+      { width: 13, eave: 4.2, rise: 2.6, roof: 0x7a4a38, plaster: true,
+        yardW: 16, yardD: 12, gate: 3.4, wallH: 1.8 },
+      { width: 19, eave: 4.9, rise: 3.2, roof: 0x565045,
+        yardW: 24, yardD: 16, gate: 4.4, wallH: 2.2 }
+    ];
+    const FARM_SPOTS = [[-62, 96], [-132, 104], [26, 122]];
+    FARM_VARIANTS.forEach((opts, i) => placeFarm(FARM_SPOTS[i][0], FARM_SPOTS[i][1], opts));
+
+    // --- Corner units: ten models for street junctions ------------------------
+    const CORNER_VARIANTS = [
+      { width: 10, depth: 10, chamfer: 3.0, storeys: 2, shopfront: true,
+        paint: 0x2f4a35, roof: 0x4d4a4e, lamp: true },
+      { width: 11, depth: 9, chamfer: 2.6, storeys: 3, plaster: true,
+        parapet: true, roof: 0x3f3d42 },
+      { width: 9, depth: 11, chamfer: 3.4, storeys: 2, shopfront: true,
+        paint: 0x5d2b2b, roof: 0x6b4433, rise: 2.7 },
+      { width: 12, depth: 10, chamfer: 3.8, storeys: 3, shopfront: true,
+        paint: 0x2b3f63, roof: 0x565259, lamp: true },
+      { width: 10, depth: 12, chamfer: 3.0, storeys: 2, plaster: true,
+        roof: 0x7a4a38, rise: 2.9 },
+      { width: 9, depth: 9, chamfer: 2.4, storeys: 2, shopfront: true,
+        paint: 0x8a6a24, plaster: true, roof: 0x4f463a },
+      { width: 13, depth: 11, chamfer: 4.2, storeys: 3, parapet: true,
+        roof: 0x44424a, lamp: true },
+      { width: 10, depth: 10, chamfer: 3.2, storeys: 3, plaster: true,
+        shopfront: true, paint: 0x7a2f2f, roof: 0x59453d },
+      { width: 11, depth: 12, chamfer: 3.6, storeys: 2, roof: 0x4a5a4e, rise: 3.1 },
+      { width: 12, depth: 9, chamfer: 2.8, storeys: 3, plaster: true,
+        parapet: true, roof: 0x3a3a3e, lamp: true }
+    ];
+    CORNER_VARIANTS.forEach((opts, i) => {
+      placeBuilding(createCornerUnit(opts), -85 + i * 19, -70, -Math.PI / 4);
+    });
+
+    const runner = createUnit(0xd4956a);
+    runner.scale.setScalar(UNIT_SCALE);
+    runner.position.set(0, UNIT_Y_OFFSET, 0);
+    runner.rotation.y = 0;
+    scene.add(runner);
+
+    const keys = new Set();
+    const state = {
+      heading: 0,
+      speed: 0,
+      targetSpeed: 0,
+      stamina: SPRINT_SECONDS,
+      distance: 0,
+      stride: 0,
+      baseY: 0,       // height of whatever the runner is standing on
+      crouch: 0,      // 0..1, smoothed
+      climbing: null, // the ladder being climbed, or null
+      climbY: 0,
+      climbPhase: 0
+    };
+    const CROUCH_SPEED = 1.25;
+    // Leg segment lengths in unit space, used to keep the feet on the ground
+    // while crouching. Must match createLeg().
+    const THIGH_LEN = 1.6875;
+    const SHIN_LEN = 1.8;
+    const CROUCH_THIGH = 1.2;  // radians the thigh swings forward
+    const CROUCH_KNEE = 2.4;   // radians of knee flex on top of that
+    const CLIMB_SPEED = 1.9;
+
+    // --- Orbit camera -------------------------------------------------
+    const MIN_PITCH = -0.25;
+    const MAX_PITCH = 1.25;
+    const MIN_DIST = 2.5;
+    const MAX_DIST = 26;
+
+    // First-person view. Yaw is not stored separately: turning the view turns
+    // the runner himself. Only pitch is free, limited to a 60 degree cone.
+    const MAX_LOOK = (60 * Math.PI) / 180;
+    const fps = { active: false, pitch: 0 };
+    const _eye = new THREE.Vector3();
+
+    const orbit = {
+      yaw: Math.PI,
+      targetYaw: Math.PI,
+      pitch: 0.55,
+      targetPitch: 0.55,
+      distance: 8.4,
+      targetDistance: 8.4,
+      follow: false
+    };
+
+    // Keeps angle interpolation from taking the long way around the circle.
+    function shortestAngle(from, to) {
+      let d = (to - from) % (Math.PI * 2);
+      if (d > Math.PI) d -= Math.PI * 2;
+      if (d < -Math.PI) d += Math.PI * 2;
+      return d;
+    }
+
+    const canvas = renderer.domElement;
+    canvas.style.touchAction = "none";
+    let dragPointer = null;
+    let lastX = 0;
+    let lastY = 0;
+
+    const isLocked = () => document.pointerLockElement === canvas;
+
+    canvas.addEventListener("pointerdown", (e) => {
+      // Always record drag state, including in first-person: if pointer lock is
+      // unavailable or refused, drag-to-look is the only way to aim.
+      dragPointer = e.pointerId;
+      lastX = e.clientX;
+      lastY = e.clientY;
+
+      if (fps.active) {
+        if (!isLocked()) {
+          try {
+            const req = canvas.requestPointerLock();
+            if (req && typeof req.catch === "function") req.catch(() => {});
+          } catch (err) {
+            /* locking unsupported — drag fallback still works */
+          }
+        }
+        fire();
+        return;
+      }
+      canvas.setPointerCapture(e.pointerId);
+    });
+
+    // Mouselook: raw pointer deltas turn the runner, no dragging needed. Only
+    // active while the pointer is locked, which only happens in first-person.
+    document.addEventListener("mousemove", (e) => {
+      if (!fps.active || !isLocked()) return;
+      state.heading -= e.movementX * 0.0025;
+      fps.pitch = THREE.MathUtils.clamp(fps.pitch - e.movementY * 0.0025, -MAX_LOOK, MAX_LOOK);
+    });
+    canvas.addEventListener("pointermove", (e) => {
+      if (e.pointerId !== dragPointer) return;
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      if (fps.active) {
+        if (isLocked()) return; // mouselook already handled this frame
+        // Touch/no-lock fallback: horizontal drag turns the RUNNER, not a
+        // detached camera, so movement always goes where you are aiming.
+        state.heading -= dx * 0.005;
+        // Vertical stays camera-only; a body cannot pitch. Clamped to the cone.
+        fps.pitch = THREE.MathUtils.clamp(fps.pitch - dy * 0.005, -MAX_LOOK, MAX_LOOK);
+        return;
+      }
+      orbit.targetYaw -= dx * 0.006;
+      orbit.targetPitch = THREE.MathUtils.clamp(orbit.targetPitch + dy * 0.005, MIN_PITCH, MAX_PITCH);
+      orbit.follow = false; // manual drag drops you out of chase mode
+    });
+    const endDrag = (e) => {
+      if (e.pointerId === dragPointer) dragPointer = null;
+    };
+    canvas.addEventListener("pointerup", endDrag);
+    canvas.addEventListener("pointercancel", endDrag);
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      orbit.targetDistance = THREE.MathUtils.clamp(
+        orbit.targetDistance * (1 + Math.sign(e.deltaY) * 0.12),
+        MIN_DIST,
+        MAX_DIST
+      );
+    }, { passive: false });
+
+    window.addEventListener("keydown", (event) => {
+      const k = event.key.toLowerCase();
+      if (k === " " || k === "spacebar") {
+        event.preventDefault();
+        fire();
+      } else if (k === "e") {
+        if (state.climbing) {
+          state.climbing = null;              // step off wherever you are
+        } else {
+          for (const lad of ladders) {
+            const near = Math.hypot(runner.position.x - lad.x, runner.position.z - lad.z);
+            const atBottom = state.baseY < 0.5 && near < 1.6;
+            const atTop = Math.abs(state.baseY - lad.topY) < 0.5 && near < 2.2;
+            if (atBottom || atTop) {
+              state.climbing = lad;
+              state.climbY = atBottom ? lad.bottomY + 0.02 : lad.topY - 0.02;
+              runner.position.x = lad.x;
+              runner.position.z = lad.z;
+              state.baseY = 0;
+              state.heading = Math.atan2(lad.centreX - lad.x, lad.centreZ - lad.z);
+              break;
+            }
+          }
+        }
+      } else if (k === "v") {
+        fps.active = !fps.active;
+        fps.pitch = 0;
+        if (!fps.active && isLocked()) document.exitPointerLock();
+      } else if (k === "c") {
+        orbit.targetYaw = state.heading + Math.PI; // snap behind the runner
+      } else if (k === "f") {
+        orbit.follow = !orbit.follow;
+      }
+    });
+
+    window.addEventListener("keydown", (event) => {
+      keys.add(event.key.toLowerCase());
+      if (["w", "a", "s", "d", "shift", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(event.key.toLowerCase())) event.preventDefault();
+    });
+    window.addEventListener("keyup", (event) => keys.delete(event.key.toLowerCase()));
+    window.addEventListener("resize", () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    // Point on the rifle (local space) held by the right hand — the foregrip.
+    // The rifle is placed at (handPosition - this offset) every frame.
+    const RIFLE_GRIP_OFFSET = new THREE.Vector3(0, -0.08, 0.94);
+    const _handPos = new THREE.Vector3();
+    const _gripOffset = new THREE.Vector3();
+
+    function animateRunner(dt) {
+      const ud = runner.userData;
+
+      // On a ladder the normal gait is bypassed entirely — and crucially the
+      // height comes from climbY, not from the walking code below, which used
+      // to slam the runner back down to ground level every frame.
+      if (state.climbing) {
+        runner.position.y = state.climbY;
+        const ph = state.climbPhase;
+        ud.torsoGroup.rotation.x = 0.06;
+        // Left hand works the rungs; the right keeps hold of the rifle.
+        ud.leftArm.rotation.set(-2.35 + Math.sin(ph) * 0.55, 0.22, -0.12);
+        ud.leftElbow.rotation.set(-0.55 - Math.sin(ph) * 0.3, 0, 0.2);
+        ud.rightArm.rotation.set(-1.05, -0.18, 0.0);
+        ud.rightElbow.rotation.set(-0.9, 0, -0.35);
+        ud.leftLeg.rotation.x = -0.35 + Math.sin(ph) * 0.55;
+        ud.rightLeg.rotation.x = -0.35 - Math.sin(ph) * 0.55;
+        ud.leftKnee.rotation.x = 0.95 - Math.sin(ph) * 0.45;
+        ud.rightKnee.rotation.x = 0.95 + Math.sin(ph) * 0.45;
+        return;
+      }
+
+      const cr = state.crouch; // used by both the leg pose and the body height
+      const moving = Math.abs(state.speed) > 0.08;
+      const sprintRatio = THREE.MathUtils.clamp((Math.abs(state.speed) - WALK_SPEED) / (SPRINT_SPEED - WALK_SPEED), 0, 1);
+      const speedRatio = THREE.MathUtils.clamp(Math.abs(state.speed) / WALK_SPEED, 0, 1);
+      const gaitCycles = moving
+        ? state.speed < 0
+          ? 0.9
+          : THREE.MathUtils.lerp(0.75, THREE.MathUtils.lerp(MARCH_GAIT_CYCLES, SPRINT_GAIT_CYCLES, sprintRatio), speedRatio)
+        : 0;
+      state.stride += dt * gaitCycles;
+
+      const phase = state.stride * Math.PI * 2;
+      const swing = Math.sin(phase);
+      const oppose = Math.sin(phase + Math.PI);
+      const lift = Math.max(0, Math.sin(phase));
+      const backLift = Math.max(0, Math.sin(phase + Math.PI));
+      const intensity = moving ? THREE.MathUtils.lerp(0.38, 1.15, sprintRatio) : 0;
+      const lean = (moving ? THREE.MathUtils.lerp(0.06, 0.30, sprintRatio) : 0) + state.crouch * 0.2;
+
+      ud.torsoGroup.rotation.x = lean;
+      ud.torsoGroup.rotation.z = swing * 0.035 * intensity;
+      ud.leftLeg.rotation.x = -swing * 0.82 * intensity;
+      ud.rightLeg.rotation.x = -oppose * 0.82 * intensity;
+      // Crouching folds the knees and tips the thighs forward over them.
+      ud.leftKnee.rotation.x = 0.15 + backLift * THREE.MathUtils.lerp(0.45, 1.35, sprintRatio) + cr * CROUCH_KNEE;
+      ud.rightKnee.rotation.x = 0.15 + lift * THREE.MathUtils.lerp(0.45, 1.35, sprintRatio) + cr * CROUCH_KNEE;
+      ud.leftLeg.rotation.x -= cr * CROUCH_THIGH;
+      ud.rightLeg.rotation.x -= cr * CROUCH_THIGH;
+      ud.leftArm.rotation.set(-1.08, 0.18, -0.20);
+      ud.rightArm.rotation.set(-1.50, -0.18, -0.0354);
+      ud.leftElbow.rotation.set(-1.55, 0, 0.86);
+      ud.rightElbow.rotation.set(-0.35, 0, -0.605);
+      // Rifle is reattached to the right hand: position follows the hand every
+      // frame, orientation stays torso-locked so the barrel points forward.
+      ud.rightHand.getWorldPosition(_handPos);
+      ud.torsoGroup.worldToLocal(_handPos);
+      _gripOffset.copy(RIFLE_GRIP_OFFSET).applyEuler(ud.rifle.rotation);
+      ud.rifle.position.copy(_handPos).sub(_gripOffset);
+      ud.rifle.position.y += moving ? Math.abs(Math.sin(phase)) * 0.02 : 0;
+
+      const bounce = moving ? Math.abs(Math.sin(phase)) * THREE.MathUtils.lerp(0.018, 0.085, sprintRatio) : Math.sin(performance.now() * 0.002) * 0.008;
+      // Crouch height is DERIVED from how far the bent legs actually shorten,
+      // so the feet stay planted instead of sinking through the ground.
+      const thighA = -cr * CROUCH_THIGH;
+      const shinA = thighA + cr * CROUCH_KNEE;
+      const legDrop =
+        (THIGH_LEN * (1 - Math.cos(thighA)) + SHIN_LEN * (1 - Math.cos(shinA))) * UNIT_SCALE;
+      runner.position.y = state.baseY + UNIT_Y_OFFSET + bounce - legDrop;
+    }
+
+    function update(dt) {
+      const forward = (keys.has("w") || keys.has("arrowup")) ? 1 : (keys.has("s") || keys.has("arrowdown")) ? -1 : 0;
+      const turning = ((keys.has("a") || keys.has("arrowleft")) ? 1 : 0) - ((keys.has("d") || keys.has("arrowright")) ? 1 : 0);
+      // --- Climbing takes over movement entirely ---
+      if (state.climbing) {
+        const lad = state.climbing;
+        state.climbY += forward * CLIMB_SPEED * dt;
+        state.climbPhase += Math.abs(forward) * dt * 4.2;
+        state.speed = 0;
+        state.crouch = 0;
+        if (state.climbY >= lad.topY) {
+          // Step off onto the platform, inboard of the railing gap.
+          state.climbY = lad.topY;
+          state.climbing = null;
+          state.baseY = lad.topY;
+          const dx = lad.centreX - lad.x;
+          const dz = lad.centreZ - lad.z;
+          const len = Math.hypot(dx, dz) || 1;
+          runner.position.x = lad.x + (dx / len) * 1.15;
+          runner.position.z = lad.z + (dz / len) * 1.15;
+        } else if (state.climbY <= lad.bottomY) {
+          // Sit at the foot of the ladder; only let go when actively going down,
+          // otherwise simply mounting the ladder would detach immediately.
+          state.climbY = lad.bottomY;
+          if (forward < 0) {
+            state.climbing = null;
+            state.baseY = 0;
+          }
+        }
+        runner.position.y = state.climbY;
+        runner.rotation.y = state.heading;
+        animateRunner(dt);
+        updateSun();
+        updateFlag(flag, dt);
+        updateBullets(dt);
+        updateCamera(dt);
+        updateHud(false);
+        return;
+      }
+
+      const crouching = keys.has("e");
+      state.crouch = THREE.MathUtils.lerp(state.crouch, crouching ? 1 : 0, 1 - Math.pow(0.0005, dt));
+      const wantsSprint = keys.has("shift") && forward > 0 && !crouching && state.stamina > 0.05;
+      const walkSpeed = crouching ? CROUCH_SPEED : WALK_SPEED;
+      const speedGoal = forward > 0
+        ? wantsSprint ? SPRINT_SPEED : walkSpeed
+        : forward < 0 ? -(crouching ? CROUCH_SPEED * 0.7 : BACKPEDAL_SPEED) : 0;
+
+      state.targetSpeed = speedGoal;
+      state.speed = THREE.MathUtils.lerp(state.speed, state.targetSpeed, 1 - Math.pow(0.0006, dt));
+      state.heading += turning * THREE.MathUtils.lerp(1.45, 2.7, Math.min(1, Math.abs(state.speed) / SPRINT_SPEED)) * dt;
+      runner.rotation.y = state.heading;
+
+      if (wantsSprint && Math.abs(state.speed) > WALK_SPEED + 0.4) {
+        state.stamina = Math.max(0, state.stamina - dt);
+      } else {
+        state.stamina = Math.min(SPRINT_SECONDS, state.stamina + dt * (SPRINT_SECONDS / STAMINA_RECOVER_SECONDS));
+      }
+
+      const movement = new THREE.Vector3(Math.sin(state.heading), 0, Math.cos(state.heading)).multiplyScalar(state.speed * dt);
+      runner.position.add(movement);
+      runner.position.x = THREE.MathUtils.clamp(runner.position.x, -165, 165);
+      runner.position.z = THREE.MathUtils.clamp(runner.position.z, -165, 165);
+      if (state.baseY > 0.5) {
+        // On a platform: stay on the walkable ring rather than walking into the
+        // tank or off the edge.
+        const lad = ladders.find((l) => Math.abs(l.topY - state.baseY) < 0.5);
+        if (lad) {
+          const dx = runner.position.x - lad.centreX;
+          const dz = runner.position.z - lad.centreZ;
+          const r = Math.hypot(dx, dz) || 1e-6;
+          // Inner limit is the TANK WALL plus the player's radius, not a guessed
+          // offset from the deck edge — that is what let you walk into the drum.
+          const inner = lad.tankR + PLAYER_RADIUS;
+          const outer = lad.deckR - PLAYER_RADIUS - 0.1;
+          const clamped = Math.min(outer, Math.max(inner, r));
+          runner.position.x = lad.centreX + (dx / r) * clamped;
+          runner.position.z = lad.centreZ + (dz / r) * clamped;
+        }
+      } else {
+        resolveCollisions();
+      }
+      state.distance += Math.abs(state.speed) * dt;
+
+      animateRunner(dt);
+      updateSun();
+      updateFlag(flag, dt);
+      updateBullets(dt);
+      updateCamera(dt);
+      updateHud(wantsSprint);
+    }
+
+    // --- Ballistics -----------------------------------------------------
+    // World units are metres (WALK_SPEED is 3 m/s), so real figures apply:
+    // a .30-06 service rifle leaves the muzzle at roughly 840 m/s.
+    const MUZZLE_VELOCITY = 840;
+    const ZERO_RANGE = 50;        // crosshair marks the bullet's path at 50 m
+    const TRACER_LENGTH = 12;  // long enough that consecutive frames nearly join up
+    const BULLET_MAX_RANGE = 320;
+    const FIRE_INTERVAL = 0.32;   // semi-auto cadence
+
+    const tracerGeo = new THREE.BoxGeometry(0.05, 0.05, TRACER_LENGTH);
+    const tracerMat = new THREE.MeshBasicMaterial({ color: 0xffe14d });
+    const bullets = [];
+    let fireCooldown = 0;
+
+    const _muzzle = new THREE.Vector3();
+    const _aim = new THREE.Vector3();
+    const _dir = new THREE.Vector3();
+
+    function fire() {
+      if (fireCooldown > 0) return;
+      fireCooldown = FIRE_INTERVAL;
+
+      runner.userData.rifle.userData.muzzlePoint.getWorldPosition(_muzzle);
+
+      // Point of aim: ZERO_RANGE metres down the camera's line of sight, i.e.
+      // exactly what the crosshair is sitting on. Firing at that point rather
+      // than straight down the barrel is what zeroes the weapon to the sight.
+      camera.getWorldDirection(_dir);
+      _aim.copy(camera.position).addScaledVector(_dir, ZERO_RANGE);
+
+      const dir = _aim.clone().sub(_muzzle).normalize();
+      const tracer = new THREE.Mesh(tracerGeo, tracerMat);
+      tracer.position.copy(_muzzle).addScaledVector(dir, TRACER_LENGTH / 2);
+      tracer.lookAt(_aim); // box's long axis is +Z, so this aligns the streak
+      scene.add(tracer);
+      bullets.push({ mesh: tracer, dir, travelled: 0 });
+    }
+
+    const puffGeo = new THREE.SphereGeometry(0.16, 8, 6);
+    const puffs = [];
+
+    function spawnPuff(x, y, z) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xbdb6a6, transparent: true, opacity: 0.85, depthWrite: false
+      });
+      const puff = new THREE.Mesh(puffGeo, mat);
+      puff.position.set(x, y, z);
+      scene.add(puff);
+      puffs.push({ mesh: puff, life: 0 });
+    }
+
+    function updateBullets(dt) {
+      if (fireCooldown > 0) fireCooldown -= dt;
+      const step = MUZZLE_VELOCITY * dt;
+
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+        const p = b.mesh.position;
+        // Sweep the whole frame's travel against the world before moving.
+        const t = segmentHit(p.x, p.y, p.z, b.dir.x, b.dir.y, b.dir.z, step);
+        if (t >= 0) {
+          spawnPuff(p.x + b.dir.x * t, p.y + b.dir.y * t, p.z + b.dir.z * t);
+          scene.remove(b.mesh);
+          bullets.splice(i, 1);
+          continue;
+        }
+        p.addScaledVector(b.dir, step);
+        b.travelled += step;
+        if (b.travelled > BULLET_MAX_RANGE || p.y < 0) {
+          if (p.y < 0) spawnPuff(p.x, 0.05, p.z);
+          scene.remove(b.mesh);
+          bullets.splice(i, 1);
+        }
+      }
+
+      for (let i = puffs.length - 1; i >= 0; i--) {
+        const pf = puffs[i];
+        pf.life += dt;
+        const k = pf.life / 0.45;
+        pf.mesh.scale.setScalar(1 + k * 2.6);
+        pf.mesh.material.opacity = Math.max(0, 0.85 * (1 - k));
+        if (k >= 1) {
+          scene.remove(pf.mesh);
+          pf.mesh.material.dispose();
+          puffs.splice(i, 1);
+        }
+      }
+    }
+
+    function updateCamera(dt) {
+      if (fps.active) {
+        runner.userData.eyePoint.getWorldPosition(_eye);
+        camera.position.copy(_eye);
+        const yaw = state.heading; // camera yaw IS the runner's facing
+        const cp = Math.cos(fps.pitch);
+        camera.lookAt(
+          _eye.x + Math.sin(yaw) * cp,
+          _eye.y + Math.sin(fps.pitch),
+          _eye.z + Math.cos(yaw) * cp
+        );
+        return;
+      }
+      if (orbit.follow) orbit.targetYaw = state.heading + Math.PI;
+      // Ease toward the desired orbit angles so drags and recenters feel smooth.
+      const k = 1 - Math.pow(0.0001, dt);
+      orbit.yaw += shortestAngle(orbit.yaw, orbit.targetYaw) * k;
+      orbit.pitch += (orbit.targetPitch - orbit.pitch) * k;
+      orbit.distance += (orbit.targetDistance - orbit.distance) * k;
+
+      const focus = new THREE.Vector3(
+        runner.position.x,
+        runner.position.y + 1.35,
+        runner.position.z
+      );
+      const cosP = Math.cos(orbit.pitch);
+      const target = new THREE.Vector3(
+        focus.x + Math.sin(orbit.yaw) * cosP * orbit.distance,
+        focus.y + Math.sin(orbit.pitch) * orbit.distance,
+        focus.z + Math.cos(orbit.yaw) * cosP * orbit.distance
+      );
+      target.y = Math.max(target.y, 0.6); // never dip below the ground plane
+      camera.position.lerp(target, 1 - Math.pow(0.0005, dt));
+      camera.lookAt(focus);
+    }
+
+    const speedEl = document.getElementById("speed");
+    const modeEl = document.getElementById("mode");
+    const distanceEl = document.getElementById("distance");
+    const staminaFill = document.getElementById("staminaFill");
+
+    function updateHud(sprinting) {
+      speedEl.textContent = Math.abs(state.speed).toFixed(2);
+      distanceEl.textContent = state.distance.toFixed(1);
+      const speedAbs = Math.abs(state.speed);
+      modeEl.textContent = speedAbs < 0.08 ? "Idle" : sprinting ? "Sprint" : state.speed < 0 ? "Back" : "March";
+      staminaFill.style.width = `${THREE.MathUtils.clamp(state.stamina / SPRINT_SECONDS, 0, 1) * 100}%`;
+      staminaFill.style.background = state.stamina < 1.2
+        ? "linear-gradient(90deg, var(--red), var(--gold))"
+        : "linear-gradient(90deg, var(--green), var(--gold))";
+    }
+
+    const clock = new THREE.Clock();
+    function loop() {
+      requestAnimationFrame(loop);
+      const dt = Math.min(clock.getDelta(), 0.033);
+      update(dt);
+      renderer.render(scene, camera);
+    }
+
+    updateHud(false);
+    loop();
+  </script>
+</body>
+</html>
