@@ -2563,12 +2563,19 @@
       const bellDome = new THREE.Mesh(
         new THREE.SphereGeometry(.78, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2), bronze
       );
+      bellDome.position.y = .04;
       bell.add(bellDome);
+      const bellSkirt = new THREE.Mesh(
+        new THREE.CylinderGeometry(.60, .78, .62, 18, 1, false), bronze
+      );
+      bellSkirt.position.y = -.25;
+      bell.add(bellSkirt);
       const bellRim = new THREE.Mesh(new THREE.TorusGeometry(.78, .1, 8, 18), bronze);
       bellRim.rotation.x = Math.PI / 2;
+      bellRim.position.y = -.56;
       bell.add(bellRim);
       const clapper = new THREE.Mesh(new THREE.SphereGeometry(.13, 10, 8), black);
-      clapper.position.y = -.72;
+      clapper.position.y = -.84;
       bell.add(clapper);
       church.add(bell);
       // The crown is hung from a visible iron rod and oak yoke, rather than
@@ -2576,15 +2583,16 @@
       cylinder(.08, .08, 2.9, 0, 19.35, towerFront - .78, black, 8);
       block(2.35, .18, .26, 0, 20.82, towerFront - .78, oak);
       const CLOCK_Y = 10.8;
+      const CLOCK_FACE_Z = towerFront + T / 2 + .025;
       const face = new THREE.Mesh(
         new THREE.CircleGeometry(.88, 24),
         new THREE.MeshPhongMaterial({ color: 0xe7e1cd, shininess: 18 })
       );
-      face.position.set(0, CLOCK_Y, towerFront + .04);
+      face.position.set(0, CLOCK_Y, CLOCK_FACE_Z);
       church.add(face);
       for (const angle of [0, Math.PI * .65]) {
         const hand = new THREE.Mesh(new THREE.BoxGeometry(.07, .48, .04), black);
-        hand.position.set(Math.sin(angle) * .2, CLOCK_Y + Math.cos(angle) * .2, towerFront + .08);
+        hand.position.set(Math.sin(angle) * .2, CLOCK_Y + Math.cos(angle) * .2, CLOCK_FACE_Z + .04);
         hand.rotation.z = -angle;
         church.add(hand);
       }
