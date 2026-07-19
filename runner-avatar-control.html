@@ -2489,6 +2489,21 @@
       sideNaveWall(-1);
       sideNaveWall(1);
 
+      // Upper side galleries begin at the window sills. The open centre keeps
+      // the lower nave readable while giving the interior a second storey.
+      const GALLERY_Y = WINDOW_SILL - .08, GALLERY_OPEN = 3.4;
+      const innerWidth = W - T * 2;
+      const galleryWidth = (innerWidth - GALLERY_OPEN) / 2;
+      const galleryX = GALLERY_OPEN / 2 + galleryWidth / 2;
+      for (const side of [-1, 1]) {
+        block(galleryWidth, .16, D - T * 2, side * galleryX, GALLERY_Y, 0, floorMat);
+        const railX = side * (GALLERY_OPEN / 2 + .06);
+        block(.12, .82, D - T * 2, railX, GALLERY_Y + .49, 0, oak);
+        for (let z = -12; z <= 12; z += 2) {
+          block(.07, .68, .07, railX, GALLERY_Y + .43, z, oak);
+        }
+      }
+
       // Plinth and buttresses give the nave a heavy, period masonry silhouette.
       block(W + .38, .45, D + .38, 0, .225, 0, darkStone);
       for (const z of [-10.5, -5.3, 0, 5.3, 10.5]) {
@@ -2515,6 +2530,15 @@
       rearGable.position.set(0, EAVE, -D / 2 - .012);
       rearGable.rotation.y = Math.PI;
       church.add(rearGable);
+      // One-sided inner cap: closes the tower-facing upper wall for the player
+      // inside without returning exterior roof fragments around the tower.
+      const frontInteriorGable = new THREE.Mesh(
+        new THREE.ShapeGeometry(gable),
+        new THREE.MeshPhongMaterial({ color: 0xaaa398, shininess: 3, side: THREE.FrontSide })
+      );
+      frontInteriorGable.position.set(0, EAVE, D / 2 - .012);
+      frontInteriorGable.rotation.y = Math.PI;
+      church.add(frontInteriorGable);
       const roofRun = W / 2;
       const roofSlope = Math.hypot(roofRun, RISE);
       const roofPitch = Math.atan2(RISE, roofRun);
