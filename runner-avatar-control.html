@@ -241,7 +241,7 @@
       <strong id="orders">Formation</strong>
       <div class="label">Your Health</div>
       <div class="bar" aria-hidden="true"><div id="playerHealthFill" class="fill"></div></div>
-      <div class="note" id="battleStatus">Secure the Town Hall for 30 seconds.</div>
+      <div class="note" id="battleStatus">Assignment loading...</div>
       <div class="note" id="forceStatus">Your force: 5 alive</div>
     </div>
   </div>
@@ -4543,18 +4543,20 @@
     }), -65, SOUTH_COTTAGE_BACK_Z, Math.PI);
 
     // --- North rear farm: the water tower occupies the rear building layer ---
+    const WATER_TOWER_X = -34;
+    const WATER_TOWER_Z = 145;
     placeBuilding(createFarmhouse({
       width: 15, depth: 8, eave: 4.5, rise: 2.8,
       plaster: true, roof: 0x5a4b40
-    }), -34, 126, Math.PI);
+    }), WATER_TOWER_X, 126, Math.PI);
     placeBuilding(createWaterTower({
       legHeight: 15, tankRadius: 3.4, tankHeight: 5.8,
       color: 0x697871, roof: 0x454741
-    }), -34, 145);
+    }), WATER_TOWER_X, WATER_TOWER_Z);
     placeBuilding(createBarn({
       width: 12, depth: 16, brick: true, eave: 6.1, rise: 4.1,
       roof: 0x4c443d, doorWidth: 4.6
-    }), -12, 145);
+    }), -12, WATER_TOWER_Z);
     placeBuilding(createWell(), -24, 134);
 
     // --- South rear farm: longer stone house and low timber barn -------------
@@ -4837,21 +4839,32 @@
     const FLOAT_Y = WATER_Y - 1.12; // feet hang below the surface, head clear
     const SOLDIER_RADIUS = 0.42;
     const SOLDIER_EYE_Y = 1.35;
+    const SOLDIER_AIM_Y = 0.95;
+    const SOLDIER_HIT_RADIUS = 0.62;
     const SOLDIER_HEALTH = 100;
     const SOLDIER_DAMAGE = 34;
     const AI_FIRE_RANGE = 78;
-    const AI_BASE_AIM_SPREAD = 0.09;
-    const AI_MOVING_AIM_SPREAD = 0.08;
-    const AI_WOUNDED_AIM_SPREAD = 0.07;
+    const AI_BASE_AIM_SPREAD = 0.045;
+    const AI_MOVING_AIM_SPREAD = 0.04;
+    const AI_WOUNDED_AIM_SPREAD = 0.055;
     const PLAYER_HUNT_RANGE = 150;
     const PLAYER_GRACE_SECONDS = 10;
     const AI_VIEW_RANGE = 72;
+    const AI_CONTACT_MEMORY_SECONDS = 8;
+    const AI_SQUAD_RADIO_RANGE = 35;
+    const AI_GOOD_SHOT_RANGE = 42;
+    const AI_TOO_CLOSE_RANGE = 10;
     const LANDMARK_CAPTURE_SECONDS = 30;
     const LANDMARK_HALF_W = 28;
     const LANDMARK_HALF_D = 24;
     const AI_FIRE_INTERVAL = 1.15;
     const AI_MOVE_SPEED = 2.55;
+    const AI_TACTICAL_MOVE_SPEED = 1.35;
+    const AI_SPRINT_SPEED = 5.8;
     const AI_INDEPENDENT_RANGE = 20;
+    const AI_OBSTACLE_PROBE = 2.2;
+    const AI_PERSONAL_SPACE = 1.05;
+    const AI_THREAT_RETREAT_RANGE = 30;
 
     const actors = [];
     const squads = [];
@@ -4929,8 +4942,14 @@
         avoidTimer: 0,
         avoidSide: pick([-1, 1]),
         avoidTarget: new THREE.Vector3(),
+        strafeSide: pick([-1, 1]),
+        tacticalTarget: new THREE.Vector3(),
         retreatTimer: 0,
         coverTarget: new THREE.Vector3(),
+        lastSeenEnemy: null,
+        lastSeenPos: new THREE.Vector3(),
+        lastSeenAge: Infinity,
+        suppressTimer: 0,
         wanderAngle: unit.rotation.y,
         target: null
       };
@@ -5000,7 +5019,9 @@
 
       const offsets = [[-2.1, 2.1], [2.1, 2.1], [-3.8, 4.2], [3.8, 4.2]];
       offsets.forEach(([ox, oz]) => {
-        squad.members.push(placeSoldier(x + ox, z + oz, color, team, enemy ? "enemy" : "soldier", squad, commandable));
+        const soldier = placeSoldier(x + ox, z + oz, color, team, enemy ? "enemy" : "soldier", squad, commandable);
+        soldier.huntsPlayer = enemy && strategy === "attack";
+        squad.members.push(soldier);
       });
       return squad;
     }
@@ -5035,6 +5056,12 @@
       createSquad(`enemy-${i}`, x, z, 0xc95757, false, true, strategy);
     });
 
+    const playerAssignment = pick([
+      { type: "guard", name: "Guard the Church", x: CHURCH_X, z: CHURCH_Z, halfW: LANDMARK_HALF_W, halfD: LANDMARK_HALF_D },
+      { type: "guard", name: "Guard the Water Tower", x: WATER_TOWER_X, z: WATER_TOWER_Z, halfW: 24, halfD: 24 },
+      { type: "attack", name: "Attack the Town Hall", x: TOWN_HALL_X, z: TOWN_HALL_Z, halfW: LANDMARK_HALF_W, halfD: LANDMARK_HALF_D }
+    ]);
+
     function sideOf(actor) {
       return actor.team.startsWith("enemy") ? "enemy" : "ally";
     }
@@ -5058,29 +5085,22 @@
       return actors.some((actor) => actor.alive && sideOf(actor) === side && inLandmarkBounds(actor, landmark));
     }
 
+    function assignmentStatus() {
+      if (playerAssignment.type === "attack") {
+        return `${playerAssignment.name}: ${Math.floor(captureProgress.ally)} / ${LANDMARK_CAPTURE_SECONDS}s`;
+      }
+      const infiltrated = anySideInLandmark("enemy", playerAssignment);
+      return infiltrated
+        ? `Assignment: ${playerAssignment.name} - enemies inside!`
+        : `Assignment: ${playerAssignment.name}`;
+    }
+
     function sameSide(a, b) {
       return a && b && sideOf(a) === sideOf(b);
     }
 
     function aliveEnemiesOf(actor) {
       return actors.filter((other) => other.alive && !sameSide(actor, other));
-    }
-
-    function nearestEnemy(actor, maxRange = AI_FIRE_RANGE) {
-      if (actor.huntsPlayer && playerActor?.alive && elapsedGameSeconds >= PLAYER_GRACE_SECONDS) {
-        const playerDist = actor.unit.position.distanceTo(playerActor.unit.position);
-        if (playerDist < PLAYER_HUNT_RANGE && hasLineOfSight(actor, playerActor)) return playerActor;
-      }
-      let best = null;
-      let bestD = maxRange;
-      for (const other of aliveEnemiesOf(actor)) {
-        const d = actor.unit.position.distanceTo(other.unit.position);
-        if (d < bestD && hasLineOfSight(actor, other)) {
-          best = other;
-          bestD = d;
-        }
-      }
-      return best;
     }
 
     function hasLineOfSight(a, b) {
@@ -5098,16 +5118,118 @@
       return segmentHit(ax, ay, az, dx / dist, dy / dist, dz / dist, dist) < 0;
     }
 
-    function movementBlocked(unit, heading, distance) {
-      return segmentHit(
-        unit.position.x,
-        unit.position.y + 0.55,
-        unit.position.z,
-        Math.sin(heading),
-        0,
-        Math.cos(heading),
-        distance + SOLDIER_RADIUS + 0.35
-      ) >= 0;
+    function canDetect(actor, other, range = AI_VIEW_RANGE) {
+      if (!other?.alive || sameSide(actor, other)) return false;
+      if (other === playerActor && actor.team.startsWith("enemy") && elapsedGameSeconds < PLAYER_GRACE_SECONDS) return false;
+      const d = actor.unit.position.distanceTo(other.unit.position);
+      return d <= range && hasLineOfSight(actor, other);
+    }
+
+    function visibleEnemy(actor) {
+      let best = null;
+      let bestScore = Infinity;
+      for (const other of aliveEnemiesOf(actor)) {
+        const range = (actor.huntsPlayer || actor.team.startsWith("enemy")) && other === playerActor ? PLAYER_HUNT_RANGE : AI_VIEW_RANGE;
+        if (!canDetect(actor, other, range)) continue;
+        const d = actor.unit.position.distanceTo(other.unit.position);
+        const score = d - (other === playerActor && actor.huntsPlayer ? 25 : 0);
+        if (score < bestScore) {
+          best = other;
+          bestScore = score;
+        }
+      }
+      return best;
+    }
+
+    function rememberEnemy(actor, enemy) {
+      actor.lastSeenEnemy = enemy;
+      actor.lastSeenPos.copy(enemy.unit.position);
+      actor.lastSeenAge = 0;
+      actor.suppressTimer = Math.max(actor.suppressTimer, 2.5);
+      if (!actor.squad) return;
+      for (const mate of actor.squad.members) {
+        if (!mate.alive || mate === actor) continue;
+        const d = mate.unit.position.distanceTo(actor.unit.position);
+        if (d > AI_SQUAD_RADIO_RANGE) continue;
+        mate.lastSeenEnemy = enemy;
+        mate.lastSeenPos.copy(enemy.unit.position);
+        mate.lastSeenAge = Math.min(mate.lastSeenAge, 2.0);
+        mate.suppressTimer = Math.max(mate.suppressTimer, 1.0);
+      }
+    }
+
+    function pointBlocked(x, z, ignoreActor = null, radius = SOLDIER_RADIUS) {
+      if (inCanal(x, z)) return true;
+      for (const c of colliders) {
+        if (x + radius < c.minX || x - radius > c.maxX || z + radius < c.minZ || z - radius > c.maxZ) continue;
+        return true;
+      }
+      for (const other of actors) {
+        if (!other.alive || other === ignoreActor) continue;
+        if (Math.hypot(x - other.unit.position.x, z - other.unit.position.z) < AI_PERSONAL_SPACE) return true;
+      }
+      return false;
+    }
+
+    function movementBlocked(actor, heading, distance) {
+      const unit = actor.unit;
+      const dirX = Math.sin(heading);
+      const dirZ = Math.cos(heading);
+      const probeDist = distance + AI_OBSTACLE_PROBE;
+      const testX = unit.position.x + dirX * probeDist;
+      const testZ = unit.position.z + dirZ * probeDist;
+      return pointBlocked(testX, testZ, actor)
+        || segmentHit(
+          unit.position.x,
+          unit.position.y + 0.55,
+          unit.position.z,
+          dirX,
+          0,
+          dirZ,
+          probeDist
+        ) >= 0;
+    }
+
+    function chooseOpenHeading(actor, desiredHeading, distance) {
+      const offsets = [0, 0.35, -0.35, 0.7, -0.7, 1.15, -1.15, Math.PI / 2, -Math.PI / 2, Math.PI];
+      for (const offset of offsets) {
+        const heading = desiredHeading + offset * actor.avoidSide;
+        if (!movementBlocked(actor, heading, distance)) return heading;
+      }
+      return null;
+    }
+
+    function routeAroundCanal(actor, target) {
+      const z = actor.unit.position.z;
+      const northBank = CANAL_Z + CANAL_W / 2 + 7;
+      const southBank = CANAL_Z - CANAL_W / 2 - 7;
+      const actorNorth = z > CANAL_Z + CANAL_W / 2;
+      const targetNorth = target.z > CANAL_Z + CANAL_W / 2;
+      const actorSouth = z < CANAL_Z - CANAL_W / 2;
+      const targetSouth = target.z < CANAL_Z - CANAL_W / 2;
+      if (!((actorNorth && targetSouth) || (actorSouth && targetNorth))) return target;
+
+      let bestBridge = BRIDGE_XS[0];
+      let bestScore = Infinity;
+      for (const bx of BRIDGE_XS) {
+        const score = Math.abs(actor.unit.position.x - bx) + Math.abs(target.x - bx) * 0.45;
+        if (score < bestScore) {
+          bestBridge = bx;
+          bestScore = score;
+        }
+      }
+
+      const alignedWithBridge = Math.abs(actor.unit.position.x - bestBridge) < BRIDGE_W / 2 - 1;
+      const currentBankZ = actorNorth ? northBank : southBank;
+      const targetBankZ = targetNorth ? northBank : southBank;
+      if (!alignedWithBridge) {
+        actor.tacticalTarget.set(bestBridge, 0, currentBankZ);
+      } else if ((actorNorth && z > CANAL_Z - CANAL_W / 2) || (actorSouth && z < CANAL_Z + CANAL_W / 2)) {
+        actor.tacticalTarget.set(bestBridge, 0, targetBankZ);
+      } else {
+        return target;
+      }
+      return actor.tacticalTarget;
     }
 
     function chooseCover(actor, threat = null) {
@@ -5133,6 +5255,54 @@
         THREE.MathUtils.clamp(actor.unit.position.z + Math.cos(away) * 16, -225, 225)
       );
       return actor.coverTarget;
+    }
+
+    function cautiousInvestigateTarget(actor, target) {
+      const jitter = Math.sin(elapsedGameSeconds * 1.7 + actor.wanderAngle) * 4;
+      actor.coverTarget.set(
+        THREE.MathUtils.clamp(target.x + jitter, -225, 225),
+        0,
+        THREE.MathUtils.clamp(target.z + Math.cos(elapsedGameSeconds + actor.wanderAngle) * 4, -225, 225)
+      );
+      return actor.coverTarget;
+    }
+
+    function feelsThreatened(actor, enemy, distToEnemy) {
+      if (!enemy) return actor.suppressTimer > 0 && actor.health < SOLDIER_HEALTH * 0.85;
+      if (hasLocalNumbersAdvantage(actor, enemy) && actor.health > SOLDIER_HEALTH * 0.4) return false;
+      if (actor.health < SOLDIER_HEALTH * 0.7) return true;
+      if (distToEnemy < AI_THREAT_RETREAT_RANGE) return true;
+      return actor.suppressTimer > 0 && distToEnemy < AI_GOOD_SHOT_RANGE + 18;
+    }
+
+    function hasLocalNumbersAdvantage(actor, enemy) {
+      const radius = 38;
+      let friends = 0;
+      let threats = enemy?.alive ? 1 : 0;
+      for (const other of actors) {
+        if (!other.alive || other === actor) continue;
+        const d = actor.unit.position.distanceTo(other.unit.position);
+        if (d > radius) continue;
+        if (sameSide(actor, other)) {
+          friends++;
+        } else if (hasLineOfSight(actor, other)) {
+          threats++;
+        }
+      }
+      return friends >= threats + 1;
+    }
+
+    function strafeTargetAroundEnemy(actor, enemy) {
+      const dx = actor.unit.position.x - enemy.unit.position.x;
+      const dz = actor.unit.position.z - enemy.unit.position.z;
+      const away = Math.atan2(dx, dz);
+      const side = away + actor.strafeSide * Math.PI / 2;
+      actor.tacticalTarget.set(
+        THREE.MathUtils.clamp(actor.unit.position.x + Math.sin(side) * 8 + Math.sin(away) * 2, -225, 225),
+        0,
+        THREE.MathUtils.clamp(actor.unit.position.z + Math.cos(side) * 8 + Math.cos(away) * 2, -225, 225)
+      );
+      return actor.tacticalTarget;
     }
 
     function resolveCollisionsFor(unit) {
@@ -5491,28 +5661,37 @@
       unit.rotation.y = simState.heading;
     }
 
-    function updateActorMovement(actor, target, dt) {
+    function updateActorMovement(actor, target, dt, opts = {}) {
       const unit = actor.unit;
       const simState = actor.state;
       actor.avoidTimer = Math.max(0, actor.avoidTimer - dt);
       let moveTarget = target;
       if (actor.avoidTimer > 0) moveTarget = actor.avoidTarget;
+      else moveTarget = routeAroundCanal(actor, target);
       const dx = moveTarget.x - unit.position.x;
       const dz = moveTarget.z - unit.position.z;
       const dist = Math.hypot(dx, dz);
-      if (dist > 0.75) {
+      const arriveRadius = opts.arriveRadius ?? 0.75;
+      if (dist > arriveRadius) {
+        const desiredSpeed = opts.sprint ? AI_SPRINT_SPEED : opts.tactical ? AI_TACTICAL_MOVE_SPEED : AI_MOVE_SPEED;
         const desired = Math.atan2(dx, dz);
         simState.heading += shortestAngle(simState.heading, desired) * (1 - Math.pow(0.0008, dt));
-        simState.speed = THREE.MathUtils.lerp(simState.speed, AI_MOVE_SPEED, 1 - Math.pow(0.0006, dt));
-        if (movementBlocked(unit, simState.heading, Math.max(0.5, simState.speed * dt))) {
+        simState.speed = THREE.MathUtils.lerp(simState.speed, desiredSpeed, 1 - Math.pow(0.0006, dt));
+        const stepDist = Math.max(0.5, simState.speed * dt);
+        const openHeading = chooseOpenHeading(actor, simState.heading, stepDist);
+        if (openHeading === null) {
+          simState.speed = 0;
+          return;
+        }
+        if (Math.abs(shortestAngle(simState.heading, openHeading)) > 0.01) {
           actor.avoidSide *= -1;
-          const sideHeading = simState.heading + actor.avoidSide * Math.PI / 2;
+          const sideHeading = openHeading;
           actor.avoidTarget.set(
-            THREE.MathUtils.clamp(unit.position.x + Math.sin(sideHeading) * 7 + Math.sin(simState.heading) * 2, -225, 225),
+            THREE.MathUtils.clamp(unit.position.x + Math.sin(sideHeading) * 8, -225, 225),
             0,
-            THREE.MathUtils.clamp(unit.position.z + Math.cos(sideHeading) * 7 + Math.cos(simState.heading) * 2, -225, 225)
+            THREE.MathUtils.clamp(unit.position.z + Math.cos(sideHeading) * 8, -225, 225)
           );
-          actor.avoidTimer = 1.2;
+          actor.avoidTimer = 0.8;
           simState.heading = sideHeading;
         }
         _aiMove.set(Math.sin(simState.heading), 0, Math.cos(simState.heading)).multiplyScalar(simState.speed * dt);
@@ -5521,7 +5700,20 @@
         unit.position.z = THREE.MathUtils.clamp(unit.position.z, -225, 225);
         resolveCollisionsFor(unit);
       } else {
-        simState.speed = THREE.MathUtils.lerp(simState.speed, 0, 1 - Math.pow(0.0006, dt));
+        const orbitHeading = Math.atan2(unit.position.x - moveTarget.x, unit.position.z - moveTarget.z) + actor.strafeSide * Math.PI / 2;
+        const openHeading = chooseOpenHeading(actor, orbitHeading, Math.max(0.5, AI_TACTICAL_MOVE_SPEED * dt));
+        if (openHeading === null) {
+          actor.strafeSide *= -1;
+          simState.speed = THREE.MathUtils.lerp(simState.speed, AI_TACTICAL_MOVE_SPEED * 0.4, 1 - Math.pow(0.0006, dt));
+          return;
+        }
+        simState.heading += shortestAngle(simState.heading, openHeading) * (1 - Math.pow(0.0008, dt));
+        simState.speed = THREE.MathUtils.lerp(simState.speed, AI_TACTICAL_MOVE_SPEED, 1 - Math.pow(0.0006, dt));
+        _aiMove.set(Math.sin(simState.heading), 0, Math.cos(simState.heading)).multiplyScalar(simState.speed * dt);
+        unit.position.add(_aiMove);
+        unit.position.x = THREE.MathUtils.clamp(unit.position.x, -225, 225);
+        unit.position.z = THREE.MathUtils.clamp(unit.position.z, -225, 225);
+        resolveCollisionsFor(unit);
       }
     }
 
@@ -5529,6 +5721,15 @@
       const side = sideOf(squad.commander);
       const own = landmarkForSide(side);
       const attack = attackLandmarkForSide(side);
+      if (side === "enemy" && squad.strategy === "attack" && playerActor.alive && elapsedGameSeconds >= PLAYER_GRACE_SECONDS) {
+        const jitter = Math.sin(elapsedGameSeconds * 0.7 + squad.patrolAngle) * 12;
+        target.set(
+          THREE.MathUtils.clamp(playerActor.unit.position.x + jitter, -210, 210),
+          0,
+          THREE.MathUtils.clamp(playerActor.unit.position.z + Math.cos(elapsedGameSeconds * 0.5 + squad.patrolAngle) * 12, -210, 210)
+        );
+        return target;
+      }
       if (landmarkAlerts[side] > 0 && squad.strategy !== "riverDefense") {
         target.set(own.x, 0, own.z);
         return target;
@@ -5594,25 +5795,47 @@
           continue;
         }
         actor.retreatTimer = Math.max(0, actor.retreatTimer - dt);
-        const enemy = nearestEnemy(actor);
+        actor.suppressTimer = Math.max(0, actor.suppressTimer - dt);
+        actor.lastSeenAge += dt;
+        if (actor.lastSeenAge > AI_CONTACT_MEMORY_SECONDS || actor.lastSeenEnemy?.alive === false) {
+          actor.lastSeenEnemy = null;
+          actor.lastSeenAge = Infinity;
+        }
+        const enemy = visibleEnemy(actor);
+        if (enemy) rememberEnemy(actor, enemy);
+        if (enemy && actor.retreatTimer > 0 && hasLocalNumbersAdvantage(actor, enemy) && actor.health > SOLDIER_HEALTH * 0.4) {
+          actor.retreatTimer = 0;
+        }
         if (actor.retreatTimer > 0) {
-          updateActorMovement(actor, chooseCover(actor, enemy), dt);
+          updateActorMovement(actor, chooseCover(actor, enemy), dt, { sprint: true, arriveRadius: 1.4 });
         } else if (enemy) {
           const dx = enemy.unit.position.x - actor.unit.position.x;
           const dz = enemy.unit.position.z - actor.unit.position.z;
           const distToEnemy = actor.unit.position.distanceTo(enemy.unit.position);
           const canSeeEnemy = hasLineOfSight(actor, enemy);
           actor.state.heading = Math.atan2(dx, dz);
-          if (distToEnemy > 20 || !canSeeEnemy) {
+          const hurt = actor.health < SOLDIER_HEALTH * 0.55;
+          const threatened = feelsThreatened(actor, enemy, distToEnemy);
+          const canShoot = canSeeEnemy && distToEnemy < AI_FIRE_RANGE && !hurt;
+          if (hurt || distToEnemy < AI_TOO_CLOSE_RANGE || threatened) {
+            actor.retreatTimer = 2.4;
+            updateActorMovement(actor, chooseCover(actor, enemy), dt, { sprint: true, arriveRadius: 1.4 });
+          } else if (distToEnemy > AI_GOOD_SHOT_RANGE || !canSeeEnemy) {
             _aiTargetPoint.copy(enemy.unit.position);
-            updateActorMovement(actor, _aiTargetPoint, dt);
+            updateActorMovement(actor, _aiTargetPoint, dt, { sprint: distToEnemy > AI_GOOD_SHOT_RANGE + 12 });
           } else {
-            actor.state.speed = THREE.MathUtils.lerp(actor.state.speed, 0, 1 - Math.pow(0.0006, dt));
+            updateActorMovement(actor, strafeTargetAroundEnemy(actor, enemy), dt, { tactical: true, arriveRadius: 1.2 });
           }
           actor.fireCooldown -= dt;
-          if (canSeeEnemy && actor.fireCooldown <= 0) {
+          if (canShoot && actor.fireCooldown <= 0) {
             actor.fireCooldown = AI_FIRE_INTERVAL + rand(-0.25, 0.4);
             fireFromActor(actor, enemy);
+          }
+        } else if (actor.lastSeenEnemy && actor.lastSeenAge < AI_CONTACT_MEMORY_SECONDS) {
+          if (actor.suppressTimer > 0 && actor.health < SOLDIER_HEALTH * 0.85) {
+            updateActorMovement(actor, chooseCover(actor, actor.lastSeenEnemy), dt, { sprint: true, arriveRadius: 1.4 });
+          } else {
+            updateActorMovement(actor, cautiousInvestigateTarget(actor, actor.lastSeenPos), dt, { tactical: true, arriveRadius: 1.8 });
           }
         } else if (actor.squad) {
           const index = Math.max(1, actor.squad.members.indexOf(actor));
@@ -5621,7 +5844,7 @@
           } else {
             squadSlotPoint(actor, index, _aiTargetPoint);
           }
-          updateActorMovement(actor, _aiTargetPoint, dt);
+          updateActorMovement(actor, _aiTargetPoint, dt, { sprint: true, arriveRadius: actor === actor.squad.commander ? 2.0 : 1.2 });
         }
         animateActor(actor, dt);
       }
@@ -5824,11 +6047,29 @@
       return t >= 0 && t <= maxDist ? t : -1;
     }
 
-    function damageActor(actor, amount) {
+    function segmentActorHit(ox, oy, oz, dx, dy, dz, maxDist, actor) {
+      let best = -1;
+      for (const y of [0.45, 0.85, 1.18]) {
+        const t = segmentSphereHit(
+          ox, oy, oz,
+          dx, dy, dz,
+          maxDist,
+          actor.unit.position.x,
+          actor.unit.position.y + y,
+          actor.unit.position.z,
+          SOLDIER_HIT_RADIUS
+        );
+        if (t >= 0 && (best < 0 || t < best)) best = t;
+      }
+      return best;
+    }
+
+    function damageActor(actor, amount, source = null) {
       if (!actor || !actor.alive) return;
       actor.health -= amount;
       if (actor === playerActor || actor.squad === playerSquad) damageFlash = 0.45;
       actor.retreatTimer = actor.health < SOLDIER_HEALTH * 0.65 ? 4.0 : Math.max(actor.retreatTimer, 1.6);
+      if (source && source.alive) rememberEnemy(actor, source);
       updateHealthBar(actor);
       if (actor.health > 0) return;
       actor.alive = false;
@@ -5847,7 +6088,7 @@
       reactToEnemyFire(actor, target);
       actor.unit.userData.rifle.userData.muzzlePoint.getWorldPosition(_muzzle);
       if (target && target.alive) {
-        _targetPos.set(target.unit.position.x, target.unit.position.y + SOLDIER_EYE_Y, target.unit.position.z);
+        _targetPos.set(target.unit.position.x, target.unit.position.y + SOLDIER_AIM_Y, target.unit.position.z);
         _shotDir.copy(_targetPos).sub(_muzzle).normalize();
       } else {
         _shotDir.set(Math.sin(actor.state.heading), 0, Math.cos(actor.state.heading)).normalize();
@@ -5914,15 +6155,7 @@
         let hitActor = null;
         for (const actor of actors) {
           if (!actor.alive || actor === b.owner || sameSide(actor, b.owner)) continue;
-          const t = segmentSphereHit(
-            p.x, p.y, p.z,
-            b.dir.x, b.dir.y, b.dir.z,
-            step,
-            actor.unit.position.x,
-            actor.unit.position.y + SOLDIER_EYE_Y,
-            actor.unit.position.z,
-            SOLDIER_RADIUS
-          );
+          const t = segmentActorHit(p.x, p.y, p.z, b.dir.x, b.dir.y, b.dir.z, step, actor);
           if (t >= 0 && (hitT < 0 || t < hitT)) {
             hitT = t;
             hitActor = actor;
@@ -5930,7 +6163,7 @@
         }
         if (hitT >= 0) {
           spawnPuff(p.x + b.dir.x * hitT, p.y + b.dir.y * hitT, p.z + b.dir.z * hitT);
-          if (hitActor) damageActor(hitActor, SOLDIER_DAMAGE);
+          if (hitActor) damageActor(hitActor, SOLDIER_DAMAGE, b.owner);
           scene.remove(b.mesh);
           bullets.splice(i, 1);
           continue;
@@ -6031,8 +6264,8 @@
         || (landmarkAlerts.ally > 0
           ? "Alert: enemies inside the Church grounds"
           : landmarkAlerts.enemy > 0
-            ? `Town Hall capture: ${Math.floor(captureProgress.ally)} / ${LANDMARK_CAPTURE_SECONDS}s`
-            : `Town Hall capture: ${Math.floor(captureProgress.ally)} / ${LANDMARK_CAPTURE_SECONDS}s`);
+            ? `Alert: allies inside the Town Hall grounds - ${assignmentStatus()}`
+            : assignmentStatus());
 
       // DOM writes can force style work. Only change a value when its rendered
       // text or CSS value actually differs, so the HUD remains visually exact.
@@ -6105,7 +6338,7 @@
       { name: "Church", x: CHURCH_X, z: CHURCH_Z, dx: -7, dy: -8, align: "right" },
       { name: "School", x: SCHOOL_X, z: SCHOOL_Z, dx: -7, dy: 10, align: "right" },
       { name: "Town Hall", x: TOWN_HALL_X, z: TOWN_HALL_Z, dx: 0, dy: -8, align: "center" },
-      { name: "Water Tower", x: -34, z: 145, dx: 0, dy: 11, align: "center" },
+      { name: "Water Tower", x: WATER_TOWER_X, z: WATER_TOWER_Z, dx: 0, dy: 11, align: "center" },
       { name: "Warehouse", x: -121, z: 26, dx: 0, dy: -8, align: "center" },
       { name: "Warehouse", x: 121, z: -26, dx: 0, dy: 11, align: "center" },
       { name: "School", x: 137.5, z: -44, dx: 0, dy: 11, align: "center" }
