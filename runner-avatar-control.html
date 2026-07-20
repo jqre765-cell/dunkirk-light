@@ -58,7 +58,7 @@
 
     .stats {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 1px;
       overflow: hidden;
       padding: 0;
@@ -122,6 +122,24 @@
     .crosshair .v.t { top: 0; }
     .crosshair .v.b { bottom: 0; }
 
+    .minimap {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      bottom: auto;
+      z-index: 3;
+      padding: 8px;
+      background: rgba(14, 20, 26, 0.72);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      backdrop-filter: blur(6px);
+    }
+    .minimap canvas { display: block; border-radius: 6px; }
+    .minimap .cap {
+      display: flex; justify-content: space-between;
+      font-size: 11px; opacity: 0.7; margin-bottom: 6px;
+    }
+
     .controls {
       position: fixed;
       right: 16px;
@@ -160,6 +178,26 @@
       font-size: 13px;
       line-height: 1.4;
     }
+
+    .orders {
+      display: grid;
+      gap: 6px;
+    }
+
+    .orders strong {
+      color: var(--gold);
+      font-size: 14px;
+    }
+
+    .damage-flash {
+      position: fixed;
+      inset: 0;
+      z-index: 4;
+      pointer-events: none;
+      background: radial-gradient(circle, rgba(255, 60, 70, 0.08), rgba(160, 0, 0, 0.24));
+      opacity: 0;
+      transition: opacity 0.08s linear;
+    }
   </style>
   <!-- Resolves the bare specifier "three" to a CDN build so the page works
        when opened directly from disk (file://). If you want to go back to a
@@ -188,17 +226,36 @@
         <div class="label">Distance</div>
         <div class="value"><span id="distance">0.0</span> m</div>
       </div>
+      <div class="stat">
+        <div class="label">Time</div>
+        <div class="value" id="time">1:00 PM</div>
+      </div>
     </div>
     <div class="panel">
       <div class="label">Sprint Stamina</div>
       <div class="bar" aria-hidden="true"><div id="staminaFill" class="fill"></div></div>
       <div class="note">March pace: 3.00 m/s. Sprint target: 7.50 m/s.</div>
     </div>
+    <div class="panel orders">
+      <div class="label">Squad Command</div>
+      <strong id="orders">Formation</strong>
+      <div class="label">Your Health</div>
+      <div class="bar" aria-hidden="true"><div id="playerHealthFill" class="fill"></div></div>
+      <div class="note" id="battleStatus">Secure the Town Hall for 30 seconds.</div>
+      <div class="note" id="forceStatus">Your force: 5 alive</div>
+    </div>
   </div>
 
   <div class="crosshair" aria-hidden="true">
     <span class="h l"></span><span class="h r"></span>
     <span class="v t"></span><span class="v b"></span>
+  </div>
+
+  <div id="damageFlash" class="damage-flash" aria-hidden="true"></div>
+
+  <div class="panel minimap">
+    <div class="cap"><span>Minimap</span><span>north up</span></div>
+    <canvas id="minimap" width="240" height="240"></canvas>
   </div>
 
   <div class="panel controls">
@@ -209,16 +266,20 @@
         <kbd>A</kbd><kbd>Left</kbd><span>turn left</span>
         <kbd>D</kbd><kbd>Right</kbd><span>turn right</span>
         <kbd>Shift</kbd><span>sprint</span>
-        <kbd>E</kbd><span>crouch / mount ladder</span>
+        <kbd>E</kbd><span>crouch / ladder / climb out of water</span>
         <kbd>W</kbd><kbd>S</kbd><span>climb up / down</span>
         <kbd>Drag</kbd><span>orbit camera</span>
         <kbd>Wheel</kbd><span>zoom</span>
         <kbd>C</kbd><span>snap behind</span>
         <kbd>F</kbd><span>toggle chase cam</span>
+        <kbd>[</kbd><kbd>]</kbd><span>time speed (1&ndash;50&times;)</span>
         <kbd>V</kbd><span>first-person view</span>
         <kbd>Mouse</kbd><span>turn &amp; aim (in first-person)</span>
         <kbd>Click</kbd><span>fire</span>
         <kbd>Space</kbd><span>fire</span>
+        <kbd>Z</kbd><span>formation</span>
+        <kbd>X</kbd><span>meet at aimed spot</span>
+        <kbd>B</kbd><span>break off</span>
     </div>
   </div>
 
@@ -237,9 +298,9 @@
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x7fb2da);
-    scene.fog = new THREE.Fog(0x7fb2da, 90, 330);
+    scene.fog = new THREE.Fog(0x7fb2da, 90, 400);
 
-    const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 420);
+    const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 620);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.setSize(innerWidth, innerHeight);
@@ -267,37 +328,254 @@
     scene.add(sun);
     scene.add(sun.target);
 
-    const SUN_OFFSET = new THREE.Vector3(52, 74, 39);
+    // --- Time, daylight, and sky -------------------------------------------
+    // One real minute equals thirty game minutes, so a full 24-hour day takes
+    // 48 real minutes. The first frame begins at 1:00 PM.
+    const GAME_MINUTES_PER_REAL_SECOND = 0.5;
+    const MINUTES_PER_DAY = 24 * 60;
+    const SUNRISE_MINUTE = 6 * 60;
+    const FULL_DAYLIGHT_MINUTE = 8 * 60;
+    const SUNSET_MINUTE = 18 * 60;
+    const NIGHT_MINUTE = 20 * 60;
+    const LAMP_ON_MINUTE = 20 * 60 + 15;
+    let gameMinutes = 13 * 60;
+    const TIME_SPEEDS = [1, 2, 5, 10, 20, 50];
+    let timeSpeedIndex = 0;
 
-    function updateSun() {
-      sun.position.set(
-        runner.position.x + SUN_OFFSET.x,
-        SUN_OFFSET.y,
-        runner.position.z + SUN_OFFSET.z
-      );
-      sun.target.position.set(runner.position.x, 0, runner.position.z);
-      sun.target.updateMatrixWorld();
+    const skyDay = new THREE.Color(0x7fb2da);
+    const skySunset = new THREE.Color(0xd78155);
+    const skyNight = new THREE.Color(0x01040a);
+    const skyColor = new THREE.Color();
+    const sunDayColor = new THREE.Color(0xfff0d4);
+    const sunSetColor = new THREE.Color(0xff8845);
+    const SUN_HORIZONTAL_DISTANCE = Math.hypot(52, 39);
+    const SUN_DAY_HEIGHT = 74;
+    // Selected so 1 PM begins with the original 52, 74, 39 sun direction.
+    const SUN_DAY_AZIMUTH = Math.atan2(39, 52);
+    const sunDirection = new THREE.Vector3();
+    let lampsWereOn = null;
+
+    function makeSunTexture() {
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 128;
+      const ctx = canvas.getContext("2d");
+      const gradient = ctx.createRadialGradient(64, 64, 4, 64, 64, 62);
+      gradient.addColorStop(0, "rgba(255,255,235,1)");
+      gradient.addColorStop(0.38, "rgba(255,218,130,0.98)");
+      gradient.addColorStop(0.7, "rgba(255,167,77,0.45)");
+      gradient.addColorStop(1, "rgba(255,126,52,0)");
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, 128, 128);
+      return new THREE.CanvasTexture(canvas);
     }
 
+    const sunDisc = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: makeSunTexture(), color: sunDayColor, transparent: true,
+      depthWrite: false, fog: false
+    }));
+    sunDisc.visible = true;
+    scene.add(sunDisc);
+
+    let starField = null;
+    function createStarField() {
+      const count = 720;
+      const positions = new Float32Array(count * 3);
+      let seed = 0x8f4d3b29;
+      const random = () => {
+        seed = (seed * 1664525 + 1013904223) >>> 0;
+        return seed / 0x100000000;
+      };
+      for (let i = 0; i < count; i++) {
+        const y = 0.1 + random() * 0.9;
+        const horizontal = Math.sqrt(1 - y * y);
+        const azimuth = random() * Math.PI * 2;
+        const radius = 440;
+        positions[i * 3] = Math.cos(azimuth) * horizontal * radius;
+        positions[i * 3 + 1] = y * radius;
+        positions[i * 3 + 2] = Math.sin(azimuth) * horizontal * radius;
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      const material = new THREE.PointsMaterial({
+        color: 0xe9efff, size: 1.35, sizeAttenuation: false,
+        transparent: true, opacity: 0, depthWrite: false, fog: false
+      });
+      const stars = new THREE.Points(geometry, material);
+      stars.frustumCulled = false;
+      return stars;
+    }
+
+    function daylightAmount() {
+      if (gameMinutes >= FULL_DAYLIGHT_MINUTE && gameMinutes < SUNSET_MINUTE) return 1;
+      if (gameMinutes >= SUNSET_MINUTE && gameMinutes < NIGHT_MINUTE) {
+        return 1 - (gameMinutes - SUNSET_MINUTE) / (NIGHT_MINUTE - SUNSET_MINUTE);
+      }
+      if (gameMinutes >= SUNRISE_MINUTE && gameMinutes < FULL_DAYLIGHT_MINUTE) {
+        return (gameMinutes - SUNRISE_MINUTE) / (FULL_DAYLIGHT_MINUTE - SUNRISE_MINUTE);
+      }
+      return 0;
+    }
+
+    function advanceGameTime(dt) {
+      gameMinutes = (
+        gameMinutes + dt * GAME_MINUTES_PER_REAL_SECOND * TIME_SPEEDS[timeSpeedIndex]
+      ) % MINUTES_PER_DAY;
+    }
+
+    function formatGameTime() {
+      const minutes = Math.floor(gameMinutes) % MINUTES_PER_DAY;
+      const hour24 = Math.floor(minutes / 60);
+      const minute = minutes % 60;
+      const suffix = hour24 >= 12 ? "PM" : "AM";
+      const hour12 = hour24 % 12 || 12;
+      return `${hour12}:${String(minute).padStart(2, "0")} ${suffix}`;
+    }
+
+    function updateSun() {
+      const daylight = daylightAmount();
+      let elevation = -22;
+      let azimuth = SUN_DAY_AZIMUTH - 0.45;
+
+      if (gameMinutes >= FULL_DAYLIGHT_MINUTE && gameMinutes < SUNSET_MINUTE) {
+        elevation = SUN_DAY_HEIGHT;
+        azimuth = SUN_DAY_AZIMUTH;
+      } else if (gameMinutes >= SUNSET_MINUTE && gameMinutes < NIGHT_MINUTE) {
+        const fall = (gameMinutes - SUNSET_MINUTE) / (NIGHT_MINUTE - SUNSET_MINUTE);
+        elevation = THREE.MathUtils.lerp(SUN_DAY_HEIGHT, -22, fall);
+        azimuth = THREE.MathUtils.lerp(SUN_DAY_AZIMUTH, SUN_DAY_AZIMUTH + 0.45, fall);
+      } else if (gameMinutes >= SUNRISE_MINUTE && gameMinutes < FULL_DAYLIGHT_MINUTE) {
+        const rise = (gameMinutes - SUNRISE_MINUTE) / (FULL_DAYLIGHT_MINUTE - SUNRISE_MINUTE);
+        elevation = THREE.MathUtils.lerp(-22, SUN_DAY_HEIGHT, rise);
+        azimuth = THREE.MathUtils.lerp(SUN_DAY_AZIMUTH - 0.45, SUN_DAY_AZIMUTH, rise);
+      }
+
+      sunDirection.set(
+        Math.cos(azimuth) * SUN_HORIZONTAL_DISTANCE,
+        elevation,
+        Math.sin(azimuth) * SUN_HORIZONTAL_DISTANCE
+      ).normalize();
+      sun.position.copy(runner.position).addScaledVector(sunDirection, 150);
+      sun.target.position.set(runner.position.x, 0, runner.position.z);
+      sun.target.updateMatrixWorld();
+
+      sun.intensity = 1.3 * Math.pow(daylight, 0.72);
+      sun.color.copy(sunDayColor).lerp(sunSetColor, 1 - daylight);
+      ambient.intensity = 0.003 + 0.517 * Math.pow(daylight, 0.8);
+
+      if (gameMinutes >= SUNSET_MINUTE && gameMinutes < NIGHT_MINUTE) {
+        const fall = (gameMinutes - SUNSET_MINUTE) / (NIGHT_MINUTE - SUNSET_MINUTE);
+        skyColor.copy(skyDay).lerp(skySunset, Math.min(1, fall * 2));
+        if (fall > 0.5) skyColor.lerp(skyNight, (fall - 0.5) * 2);
+      } else if (gameMinutes >= SUNRISE_MINUTE && gameMinutes < FULL_DAYLIGHT_MINUTE) {
+        const rise = (gameMinutes - SUNRISE_MINUTE) / (FULL_DAYLIGHT_MINUTE - SUNRISE_MINUTE);
+        skyColor.copy(skyNight).lerp(skySunset, Math.min(1, rise * 2));
+        if (rise > 0.5) skyColor.lerp(skyDay, (rise - 0.5) * 2);
+      } else {
+        skyColor.copy(daylight > 0 ? skyDay : skyNight);
+      }
+      scene.background.copy(skyColor);
+      scene.fog.color.copy(skyColor);
+
+      sunDisc.position.copy(runner.position).addScaledVector(sunDirection, 440);
+      sunDisc.scale.setScalar(8 + daylight * 2);
+      sunDisc.material.color.copy(sun.color);
+      sunDisc.material.opacity = daylight;
+      sunDisc.visible = daylight > 0.01;
+
+      if (starField) {
+        starField.position.set(runner.position.x, 0, runner.position.z);
+        starField.material.opacity = Math.pow(1 - daylight, 1.5);
+      }
+
+      // Street lamps come on at 8:15 PM and stay on until the 6 AM sunrise.
+      const lampsOn = gameMinutes >= LAMP_ON_MINUTE || gameMinutes < SUNRISE_MINUTE;
+      if (lampsOn !== lampsWereOn) {
+        lampGlassMat.color.setHex(lampsOn ? 0xffcf72 : 0x302d25);
+        lampGlassMat.emissive.setHex(lampsOn ? 0xff9d38 : 0x000000);
+        lampGlassMat.emissiveIntensity = lampsOn ? 3.2 : 0;
+        lampsWereOn = lampsOn;
+      }
+      updateStreetLightPool(lampsOn);
+    }
+
+    // Canal geometry, declared before the ground because the ground has to be
+    // built with a hole cut through it — otherwise the grass would render
+    // straight across the top of the channel.
+    // --- Town plan -----------------------------------------------------------
+    // One description drives the roads, the collision and the minimap.
+    const CANAL_Z = 0;         // the river runs through the middle of the town
+    const CANAL_W = 18;
+    const CANAL_DEPTH = 4.5;
+    const WATER_Y = -0.8;
+    const BRIDGE_W = 9;
+    const GROUND_HALF = 230;
+
+    const GRID = 50;                       // junction spacing
+    const QUAY = CANAL_W / 2 + 5;          // embankment road centreline
+    const ROAD_W = 8;
+    const QUAY_W = 10;
+    const BRIDGE_XS = [-100, 100];
+
+    const COLS = [];
+    for (let x = -200; x <= 200; x += GRID) COLS.push(x);
+    const ROWS = [];
+    for (let k = 0; k < 4; k++) {
+      ROWS.push(CANAL_Z + QUAY + k * GRID);
+      ROWS.push(CANAL_Z - QUAY - k * GRID);
+    }
+    ROWS.sort((a, b) => a - b);
+    const ROW_MIN = ROWS[0], ROW_MAX = ROWS[ROWS.length - 1];
+    const COL_MIN = COLS[0], COL_MAX = COLS[COLS.length - 1];
+
+    const roads = [];
+    for (const z of ROWS) {
+      roads.push({
+        x: (COL_MIN + COL_MAX) / 2, z,
+        w: COL_MAX - COL_MIN,          // stops on the outer columns, no stubs
+        d: Math.abs(z - CANAL_Z) === QUAY ? QUAY_W : ROAD_W,
+        kind: Math.abs(z - CANAL_Z) === QUAY ? "quay" : "street"
+      });
+    }
+    // Every cross street stops at the embankment on both banks — including the
+    // bridge columns, where the bridge deck itself carries the crossing.
+    for (const x of COLS) {
+      for (const sd of [-1, 1]) {
+        const zA = CANAL_Z + sd * QUAY;
+        const zB = sd > 0 ? ROW_MAX : ROW_MIN;
+        roads.push({
+          x, z: (zA + zB) / 2, w: ROAD_W,
+          d: Math.abs(zB - zA),          // ends on the outer row, no stub
+          kind: "street"
+        });
+      }
+    }
+    const junctions = [];
+    for (const z of ROWS) for (const x of COLS) junctions.push({ x, z });
+
+    const groundShape = new THREE.Shape();
+    groundShape.moveTo(-GROUND_HALF, -GROUND_HALF);
+    groundShape.lineTo(GROUND_HALF, -GROUND_HALF);
+    groundShape.lineTo(GROUND_HALF, GROUND_HALF);
+    groundShape.lineTo(-GROUND_HALF, GROUND_HALF);
+    groundShape.closePath();
+    const canalHole = new THREE.Path();
+    canalHole.moveTo(-GROUND_HALF, -(CANAL_Z - CANAL_W / 2));
+    canalHole.lineTo(GROUND_HALF, -(CANAL_Z - CANAL_W / 2));
+    canalHole.lineTo(GROUND_HALF, -(CANAL_Z + CANAL_W / 2));
+    canalHole.lineTo(-GROUND_HALF, -(CANAL_Z + CANAL_W / 2));
+    canalHole.closePath();
+    groundShape.holes.push(canalHole);
+
+    const groundGeo = new THREE.ShapeGeometry(groundShape);
+    groundGeo.rotateX(-Math.PI / 2);
     const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(340, 340),
+      groundGeo,
       new THREE.MeshStandardMaterial({ color: 0x4c7f3e, roughness: 0.85 })
     );
-    ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
     scene.add(ground);
 
     // (debug grid removed — it read as a sports pitch under the village)
-
-    for (let i = -80; i <= 80; i += 10) {
-      const marker = new THREE.Mesh(
-        new THREE.BoxGeometry(0.08, 0.04, 2.6),
-        new THREE.MeshStandardMaterial({ color: i === 0 ? 0xffd166 : 0xe6eef2, roughness: 0.55 })
-      );
-      marker.position.set(i, 0.03, -8);
-      marker.receiveShadow = true;
-      scene.add(marker);
-    }
 
     // --- Village building ------------------------------------------------
     // Dimensions are real metres, checked against the 1.84 m soldier: 8 x 10 m
@@ -699,6 +977,13 @@
     // Buildings are axis-aligned boxes. Rotated footprints are widened into the
     // enclosing AABB, which is conservative but cheap and good enough for cover.
     const colliders = [];
+    // A separate, simplified footprint for each placed structure lets the
+    // minimap show every building clearly instead of only its individual walls.
+    const minimapStructures = [];
+    // Every model placed through placeBuilding is scenery: it never moves after
+    // the town has loaded. Keep those roots so their opaque meshes can be
+    // submitted together without changing the geometry or its materials.
+    const staticBuildingRoots = [];
     // Declared here, not with the player state, because placeBuilding() runs
     // during scene construction — well before the state block is evaluated.
     const ladders = [];
@@ -707,6 +992,7 @@
       group.position.set(x, 0, z);
       group.rotation.y = rotY;
       scene.add(group);
+      staticBuildingRoots.push(group);
       // A building can declare individual wall boxes instead of one solid
       // footprint — that is what lets the player walk inside it.
       const lad = group.userData.ladder;
@@ -729,16 +1015,27 @@
       if (boxes) {
         const cs = Math.cos(rotY);
         const sn = Math.sin(rotY);
+        let minX = Infinity, maxX = -Infinity;
+        let minZ = Infinity, maxZ = -Infinity;
+        let maxY = 0;
         for (const b of boxes) {
           const wx = x + b.x * cs + b.z * sn;
           const wz = z - b.x * sn + b.z * cs;
           const hx = (Math.abs(cs) * b.w) / 2 + (Math.abs(sn) * b.d) / 2;
           const hz = (Math.abs(sn) * b.w) / 2 + (Math.abs(cs) * b.d) / 2;
+          minX = Math.min(minX, wx - hx);
+          maxX = Math.max(maxX, wx + hx);
+          minZ = Math.min(minZ, wz - hz);
+          maxZ = Math.max(maxZ, wz + hz);
+          maxY = Math.max(maxY, b.h);
           colliders.push({
             minX: wx - hx, maxX: wx + hx,
             minZ: wz - hz, maxZ: wz + hz,
             maxY: b.h
           });
+        }
+        if ((maxX - minX) * (maxZ - minZ) >= 8) {
+          minimapStructures.push({ minX, maxX, minZ, maxZ, maxY });
         }
         return group;
       }
@@ -754,8 +1051,113 @@
           minZ: z - hz, maxZ: z + hz,
           maxY: fp.h
         });
+        minimapStructures.push({
+          minX: x - hx, maxX: x + hx,
+          minZ: z - hz, maxZ: z + hz,
+          maxY: fp.h
+        });
       }
       return group;
+    }
+
+    // The town contains many small, static meshes. BatchedMesh keeps every
+    // source geometry, transform, material, and shadow setting intact, but
+    // submits compatible opaque pieces together. Transparent panes remain
+    // separate so their depth sorting stays exactly as authored.
+    function batchStaticBuildings() {
+      if (!THREE.BatchedMesh) return;
+
+      scene.updateMatrixWorld(true);
+      const compatibleBatches = new Map();
+
+      for (const root of staticBuildingRoots) {
+        root.traverse((node) => {
+          if (
+            !node.isMesh ||
+            !node.geometry ||
+            Array.isArray(node.material) ||
+            !node.material ||
+            node.material.transparent ||
+            node.morphTargetInfluences ||
+            node.userData.noBatch
+          ) return;
+
+          const geometry = node.geometry;
+          const position = geometry.getAttribute("position");
+          if (!position) return;
+
+          // BatchedMesh requires matching attribute layouts and indexed state.
+          const attributes = Object.keys(geometry.attributes)
+            .sort()
+            .map((name) => {
+              const attribute = geometry.getAttribute(name);
+              return `${name}:${attribute.itemSize}:${attribute.normalized}:${attribute.array.constructor.name}`;
+            })
+            .join("|");
+          const key = [
+            node.material.uuid,
+            geometry.getIndex() ? "indexed" : "nonindexed",
+            attributes,
+            node.castShadow ? 1 : 0,
+            node.receiveShadow ? 1 : 0,
+            node.renderOrder,
+            node.layers.mask
+          ].join(";");
+
+          let entries = compatibleBatches.get(key);
+          if (!entries) {
+            entries = [];
+            compatibleBatches.set(key, entries);
+          }
+          entries.push({ node, geometry, material: node.material });
+        });
+      }
+
+      const batches = [];
+      try {
+        for (const entries of compatibleBatches.values()) {
+          if (entries.length < 2) continue;
+
+          let vertexCount = 0;
+          let indexCount = 0;
+          for (const entry of entries) {
+            vertexCount += entry.geometry.getAttribute("position").count;
+            const index = entry.geometry.getIndex();
+            if (index) indexCount += index.count;
+          }
+
+          const first = entries[0].node;
+          const batch = new THREE.BatchedMesh(
+            entries.length,
+            vertexCount,
+            indexCount,
+            entries[0].material
+          );
+          batch.name = "Static building batch";
+          batch.castShadow = first.castShadow;
+          batch.receiveShadow = first.receiveShadow;
+          batch.renderOrder = first.renderOrder;
+          batch.layers.mask = first.layers.mask;
+          batch.perObjectFrustumCulled = true;
+
+          for (const entry of entries) {
+            const id = batch.addGeometry(entry.geometry);
+            batch.setMatrixAt(id, entry.node.matrixWorld);
+          }
+          batch.computeBoundingBox();
+          batch.computeBoundingSphere();
+          batches.push({ batch, entries });
+        }
+      } catch (error) {
+        // Older GPUs can reject a particular attribute layout. Leave the
+        // original mesh untouched in that case, which is a visual no-op.
+        return;
+      }
+
+      for (const { batch, entries } of batches) {
+        for (const entry of entries) entry.node.removeFromParent();
+        scene.add(batch);
+      }
     }
 
     const PLAYER_RADIUS = 0.45;
@@ -1300,12 +1702,16 @@
 
       const bays = opts.bays || 9;
       const bayX = (i) => (i - (bays - 1) / 2) * (W / bays);
+      const clearDoorBays = opts.clearDoorBays || 0;
       const frontOpenings = [{ x: 0, w: 1.9, h: 3.0, sill: 0, door: true }];
       for (let i = 0; i < bays; i++) {
-        if (i !== (bays - 1) / 2) {
+        const closeToDoor = clearDoorBays && Math.abs(i - (bays - 1) / 2) < clearDoorBays;
+        if (!closeToDoor && i !== (bays - 1) / 2) {
           frontOpenings.push({ x: bayX(i), w: 1.35, h: 2.6, sill: 0.95, barsV: 1, barsH: 3 });
         }
-        frontOpenings.push({ x: bayX(i), w: 1.35, h: 2.25, sill: GROUND + 0.8, barsV: 1, barsH: 2 });
+        if (!closeToDoor) {
+          frontOpenings.push({ x: bayX(i), w: 1.35, h: 2.25, sill: GROUND + 0.8, barsV: 1, barsH: 2 });
+        }
       }
       const backOpenings = [];
       for (let i = 0; i < bays; i += 2) {
@@ -1500,14 +1906,38 @@
 
       // Lean-to scullery on the far end.
       const LEAN_W = 3.6;
+      const LEAN_H = 2.9;
+      const LEAN_ROOF_THICKNESS = 0.16;
+      const LEAN_ROOF_PITCH = 0.3;
       const leanX = W / 2 + LEAN_W / 2;
-      const lean = new THREE.Mesh(new THREE.BoxGeometry(LEAN_W, 2.9, D - 0.8), wallMat);
-      lean.position.set(leanX, 0.4 + 1.45, 0);
+      const lean = new THREE.Mesh(new THREE.BoxGeometry(LEAN_W, LEAN_H, D - 0.8), wallMat);
+      lean.position.set(leanX, 0.4 + LEAN_H / 2, 0);
       farm.add(lean);
-      const leanRoof = new THREE.Mesh(new THREE.BoxGeometry(LEAN_W + 0.5, 0.16, D + 0.1), fRoofMat);
-      leanRoof.position.set(leanX, 0.4 + 3.05, 0);
-      leanRoof.rotation.z = -0.3;
+      const leanRoofW = LEAN_W + 0.5;
+      const leanRoofRise = (leanRoofW / 2) * Math.sin(LEAN_ROOF_PITCH);
+      const leanRoof = new THREE.Mesh(
+        new THREE.BoxGeometry(leanRoofW, LEAN_ROOF_THICKNESS, D + 0.1),
+        fRoofMat
+      );
+      // The low outer edge rests on the lean-to wall; the higher inner edge
+      // meets the farmhouse wall instead of cutting through the small annex.
+      leanRoof.position.set(
+        leanX,
+        0.4 + LEAN_H + (LEAN_ROOF_THICKNESS / 2) * Math.cos(LEAN_ROOF_PITCH) + leanRoofRise,
+        0
+      );
+      leanRoof.rotation.z = -LEAN_ROOF_PITCH;
       farm.add(leanRoof);
+      // A visible flashing/ledger closes the roof-to-wall joint, keeping the
+      // scullery visually attached to the farmhouse rather than as a loose box.
+      const leanJoinY =
+        0.4 + LEAN_H + LEAN_ROOF_THICKNESS * Math.cos(LEAN_ROOF_PITCH) + leanRoofRise * 2;
+      const leanFlashing = new THREE.Mesh(
+        new THREE.BoxGeometry(0.2, 0.3, D + 0.16),
+        fRoofMat
+      );
+      leanFlashing.position.set(W / 2 + 0.04, leanJoinY - 0.14, 0);
+      farm.add(leanFlashing);
       const leanDoor = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.9, 0.08), timberMat);
       leanDoor.position.set(leanX, 0.4 + 0.95, (D - 0.8) / 2 + 0.04);
       farm.add(leanDoor);
@@ -1823,6 +2253,288 @@
       return unit;
     }
 
+    // --- Canal, quays and bridge ---------------------------------------------
+    const canalStoneMat = new THREE.MeshPhongMaterial({ color: 0x767065, shininess: 6 });
+    const canalBedMat = new THREE.MeshPhongMaterial({ color: 0x2b2a22, shininess: 2 });
+    const waterMat = new THREE.MeshPhongMaterial({
+      color: 0x1b3f47,
+      shininess: 140,
+      specular: 0x8fb4bd,
+      transparent: true,
+      opacity: 0.92
+    });
+
+    const WATER_SEGS_X = 96;
+    const WATER_SEGS_Z = 8;
+    let waterGeo = null;
+    let waterBase = null;
+
+    function buildCanal() {
+      const half = GROUND_HALF;
+
+      // Bed.
+      const bed = new THREE.Mesh(
+        new THREE.BoxGeometry(half * 2, 0.4, CANAL_W + 3.0),
+        canalBedMat
+      );
+      bed.position.set(0, -CANAL_DEPTH, CANAL_Z);
+      bed.receiveShadow = true;
+      scene.add(bed);
+
+      // Quay walls: vertical faces holding the banks back, plus coping.
+      for (const sd of [-1, 1]) {
+        const wall = new THREE.Mesh(
+          new THREE.BoxGeometry(half * 2, CANAL_DEPTH, 1.6),
+          canalStoneMat
+        );
+        wall.position.set(0, -CANAL_DEPTH / 2, CANAL_Z + sd * (CANAL_W / 2 + 0.8));
+        wall.receiveShadow = true;
+        wall.castShadow = true;
+        scene.add(wall);
+
+        const cope = new THREE.Mesh(
+          new THREE.BoxGeometry(half * 2, 0.28, 2.2),
+          stoneMat
+        );
+        // Sat 0.2 m proud of the water edge; pulled back so the stone stops
+        // exactly at the bank and nothing cantilevers over the river.
+        cope.position.set(0, 0.14, CANAL_Z + sd * (CANAL_W / 2 + 1.1));
+        cope.receiveShadow = true;
+        scene.add(cope);
+      }
+
+      // Mooring bollards along the north quay.
+      for (let x = -half + 20; x < half - 20; x += 26) {
+        if (BRIDGE_XS.some((bx) => Math.abs(x - bx) < BRIDGE_W + 2)) continue;
+        const bollard = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.26, 0.34, 1.0, 10),
+          ironMat
+        );
+        bollard.position.set(x, 0.5, CANAL_Z + CANAL_W / 2 + 2.4);
+        bollard.castShadow = true;
+        scene.add(bollard);
+      }
+
+      // Water surface, rippled every frame.
+      waterGeo = new THREE.PlaneGeometry(half * 2, CANAL_W, WATER_SEGS_X, WATER_SEGS_Z);
+      waterGeo.rotateX(-Math.PI / 2);
+      waterBase = Float32Array.from(waterGeo.attributes.position.array);
+      const water = new THREE.Mesh(waterGeo, waterMat);
+      water.position.set(0, WATER_Y, CANAL_Z);
+      scene.add(water);
+    }
+
+    let waterTime = 0;
+
+    function updateWater(t) {
+      if (!waterGeo) return;
+      const arr = waterGeo.attributes.position.array;
+      for (let i = 0; i < arr.length; i += 3) {
+        const x = waterBase[i];
+        const z = waterBase[i + 2];
+        arr[i + 1] =
+          Math.sin(x * 0.28 + t * 1.4) * 0.055 +
+          Math.sin(z * 0.9 - t * 2.1) * 0.03 +
+          Math.sin((x + z) * 0.17 + t * 0.8) * 0.045;
+      }
+      waterGeo.attributes.position.needsUpdate = true;
+      waterGeo.computeVertexNormals();
+    }
+
+    function buildBridge(BRIDGE_X) {
+      const bridge = new THREE.Group();
+      // Just long enough to land on the quay coping, not out across the road.
+      const span = CANAL_W + 2.8;
+      const timber = new THREE.MeshPhongMaterial({ color: 0x6a5232, shininess: 5 });
+      const timberDark = new THREE.MeshPhongMaterial({ color: 0x4a3a24, shininess: 5 });
+
+      // Piles driven into the bed, in pairs across the channel.
+      const pileZ = [-CANAL_W / 2 + 1.5, -CANAL_W / 6, CANAL_W / 6, CANAL_W / 2 - 1.5];
+      for (const pz of pileZ) {
+        for (const sd of [-1, 1]) {
+          const pile = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.24, 0.28, CANAL_DEPTH + 0.6, 8),
+            timberDark
+          );
+          pile.position.set(
+            BRIDGE_X + sd * (BRIDGE_W / 2 - 0.5),
+            -CANAL_DEPTH / 2 + 0.1,
+            CANAL_Z + pz
+          );
+          pile.castShadow = true;
+          bridge.add(pile);
+        }
+      }
+
+      // Two stringers running the length of the span.
+      for (const sd of [-1, 1]) {
+        const stringer = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.34, span), timberDark);
+        stringer.position.set(BRIDGE_X + sd * (BRIDGE_W / 2 - 0.7), -0.22, CANAL_Z);
+        bridge.add(stringer);
+      }
+
+      // Deck planks laid across.
+      const planks = Math.round(span / 0.42);
+      for (let i = 0; i < planks; i++) {
+        const plank = new THREE.Mesh(new THREE.BoxGeometry(BRIDGE_W, 0.11, 0.34), timber);
+        plank.position.set(BRIDGE_X, 0.02, CANAL_Z - span / 2 + 0.21 + i * (span / planks));
+        plank.receiveShadow = true;
+        bridge.add(plank);
+      }
+
+      // Handrails: posts with a top rail and a mid rail.
+      for (const sd of [-1, 1]) {
+        const railX = BRIDGE_X + sd * (BRIDGE_W / 2 - 0.18);
+        const posts = 9;
+        for (let i = 0; i < posts; i++) {
+          const post = new THREE.Mesh(new THREE.BoxGeometry(0.16, 1.1, 0.16), timberDark);
+          post.position.set(railX, 0.55, CANAL_Z - span / 2 + (span / (posts - 1)) * i);
+          post.castShadow = true;
+          bridge.add(post);
+        }
+        for (const h of [0.58, 1.02]) {
+          const rail = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, span), timber);
+          rail.position.set(railX, h, CANAL_Z);
+          bridge.add(rail);
+        }
+      }
+
+      scene.add(bridge);
+
+      // Collision: the canal blocks movement except across the bridge, and the
+      // handrails stop you walking off the side of it.
+      // The river is deliberately NOT a collider — walk off the quay and you go
+      // in. Swimming is handled in the movement code instead.
+      for (const sd of [-1, 1]) {
+        const px = BRIDGE_X + sd * (BRIDGE_W / 2 - 0.18);
+        colliders.push({
+          minX: px - 0.22, maxX: px + 0.22,
+          minZ: CANAL_Z - span / 2, maxZ: CANAL_Z + span / 2,
+          maxY: 1.15
+        });
+      }
+    }
+
+    // --- Canal warehouse -----------------------------------------------------
+    // Brick, three storeys, loading doors stacked up the canal elevation with a
+    // hoist beam and pulley over them.
+    function createWarehouse(opts = {}) {
+      const W = opts.width || 18;
+      const D = opts.depth || 12;
+      const STOREYS = 3;
+      const STOREY_H = 3.6;
+      const EAVE = STOREYS * STOREY_H;
+      const RISE = opts.rise || 3.4;
+      const T = 0.45;
+      const wh = new THREE.Group();
+      const brick = new THREE.MeshPhongMaterial({
+        color: opts.brick || 0x7d4a3a, shininess: 3, side: THREE.DoubleSide
+      });
+      const whRoof = new THREE.MeshPhongMaterial({ color: opts.roof || 0x46424a, shininess: 6 });
+
+      const plinth = new THREE.Mesh(new THREE.BoxGeometry(W + 0.4, 0.5, D + 0.4), stoneMat);
+      plinth.position.y = 0.25;
+      wh.add(plinth);
+
+      // Canal elevation: loading doors stacked in the centre bay.
+      const front = [];
+      for (let sIdx = 0; sIdx < STOREYS; sIdx++) {
+        const base = sIdx * STOREY_H;
+        front.push({ x: 0, w: 2.3, h: 2.7, sill: base + 0.1, empty: sIdx > 0, door: sIdx === 0 });
+        // Bay positions are fractions of the wall, so narrow variants keep their
+        // windows inside the building instead of hanging off the corners.
+        for (const sd of [-1, 1]) {
+          front.push({ x: sd * W * 0.28, w: 1.2, h: 1.7, sill: base + 0.9, barsV: 1, barsH: 2 });
+          front.push({ x: sd * W * 0.42, w: 1.2, h: 1.7, sill: base + 0.9, barsV: 1, barsH: 2 });
+        }
+      }
+      const back = [];
+      const sides = [];
+      for (let sIdx = 0; sIdx < STOREYS; sIdx++) {
+        const base = sIdx * STOREY_H;
+        for (const sd of [-1, 1]) {
+          back.push({ x: sd * W * 0.22, w: 1.2, h: 1.7, sill: base + 0.9, barsH: 2 });
+          back.push({ x: sd * W * 0.42, w: 1.2, h: 1.7, sill: base + 0.9, barsH: 2 });
+        }
+        sides.push({ x: -D * 0.22, w: 1.1, h: 1.6, sill: base + 0.95, barsH: 2 });
+        sides.push({ x: D * 0.22, w: 1.1, h: 1.6, sill: base + 0.95, barsH: 2 });
+      }
+      back.push({ x: 0, w: 2.4, h: 2.9, sill: 0, door: true });
+
+      const fw = buildWall(W, EAVE, front, brick, T, timberMat);
+      fw.position.set(0, 0.5, D / 2 - T / 2);
+      wh.add(fw);
+      const bw = buildWall(W, EAVE, back, brick, T, timberMat);
+      bw.position.set(0, 0.5, -(D / 2 - T / 2));
+      bw.rotation.y = Math.PI;
+      wh.add(bw);
+      for (const sd of [-1, 1]) {
+        const wall = buildWall(D - 2 * T, EAVE, sides, brick, T, timberMat);
+        wall.position.set(sd * (W / 2 - T / 2), 0.5, 0);
+        wall.rotation.y = (sd * Math.PI) / 2;
+        wh.add(wall);
+      }
+
+      // Floor bands marking the storeys.
+      for (let sIdx = 1; sIdx < STOREYS; sIdx++) {
+        const band = new THREE.Mesh(new THREE.BoxGeometry(W + 0.25, 0.3, D + 0.25), stoneMat);
+        band.position.y = 0.5 + sIdx * STOREY_H - 0.25;
+        wh.add(band);
+      }
+
+      // Gable + roof, ridge along the width, gable facing the canal.
+      const gable = new THREE.Shape();
+      gable.moveTo(-W / 2, 0); gable.lineTo(W / 2, 0); gable.lineTo(0, RISE); gable.closePath();
+      const gg = new THREE.ExtrudeGeometry(gable, { depth: D, bevelEnabled: false });
+      gg.translate(0, 0, -D / 2);
+      const gm = new THREE.Mesh(gg, brick);
+      gm.position.y = 0.5 + EAVE;
+      wh.add(gm);
+
+      const run = W / 2;
+      const slope = Math.hypot(run, RISE);
+      const pitch = Math.atan2(RISE, run);
+      const OVER = 0.55, TH = 0.2;
+      const slabGeo = new THREE.BoxGeometry(slope + OVER, TH, D + 0.9);
+      const offX = (run / slope) * (OVER / 2) + (RISE / slope) * (TH / 2);
+      const offY = -(RISE / slope) * (OVER / 2) + (run / slope) * (TH / 2);
+      for (const sd of [-1, 1]) {
+        const slab = new THREE.Mesh(slabGeo, whRoof);
+        slab.position.x = sd * (run / 2 + offX);
+        slab.position.y = 0.5 + EAVE + RISE / 2 + offY;
+        slab.rotation.z = -sd * pitch;
+        wh.add(slab);
+      }
+
+      // Hoist beam projecting over the loading doors, with a pulley and rope.
+      const beamY = 0.5 + EAVE + RISE * 0.55;
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.34, 3.4), barnTimberMat);
+      beam.position.set(0, beamY, D / 2 + 1.1);
+      wh.add(beam);
+      const brace = new THREE.Mesh(new THREE.BoxGeometry(0.22, 2.2, 0.22), barnTimberMat);
+      brace.position.set(0, beamY - 1.0, D / 2 + 0.3);
+      brace.rotation.x = -0.55;
+      wh.add(brace);
+      const pulley = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.08, 6, 14), ironMat);
+      pulley.rotation.y = Math.PI / 2;
+      pulley.position.set(0, beamY - 0.42, D / 2 + 2.5);
+      wh.add(pulley);
+      const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 5.5, 6), timberMat);
+      rope.position.set(0, beamY - 3.3, D / 2 + 2.5);
+      wh.add(rope);
+      const hook = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.05, 6, 12, Math.PI * 1.4), ironMat);
+      hook.position.set(0, beamY - 6.1, D / 2 + 2.5);
+      wh.add(hook);
+
+      const floor = new THREE.Mesh(new THREE.BoxGeometry(W - 2 * T, 0.1, D - 2 * T), interiorMat);
+      floor.position.y = 0.55;
+      wh.add(floor);
+
+      wh.traverse((n) => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+      wh.userData.footprint = { w: W, d: D, h: 0.5 + EAVE + RISE };
+      return wh;
+    }
+
     // --- Mairie (town hall) --------------------------------------------------
     function createTownHall() {
       const W = 30, D = 15;
@@ -1982,6 +2694,98 @@
       return hall;
     }
 
+    // --- Argentine flag texture ----------------------------------------------
+    // Three equal horizontal bands, celeste / white / celeste, with the Sun of
+    // May centred on the white band: a 32-ray sun alternating straight and
+    // flame-shaped rays around a faced disc.
+    function makeArgentineFlagTexture() {
+      const H = 900;
+      const W = (H * 14) / 9;
+      const canvas = document.createElement("canvas");
+      canvas.width = W;
+      canvas.height = H;
+      const g = canvas.getContext("2d");
+
+      const CELESTE = "#74acdf";
+      const WHITE = "#ffffff";
+      const GOLD = "#f6b40e";
+      const OUTLINE = "#85340a";
+
+      g.fillStyle = CELESTE;
+      g.fillRect(0, 0, W, H);
+      g.fillStyle = WHITE;
+      g.fillRect(0, H / 3, W, H / 3);
+
+      const cx = W / 2;
+      const cy = H / 2;
+      const DISC = H / 15;        // radius of the faced centre disc
+      const RAY_IN = DISC * 1.02;
+      const RAY_OUT = DISC * 2.35; // ray tips stay inside the white band
+
+      g.save();
+      g.translate(cx, cy);
+      g.fillStyle = GOLD;
+      g.strokeStyle = OUTLINE;
+      g.lineWidth = Math.max(1, H / 600);
+
+      for (let i = 0; i < 32; i++) {
+        const a = (i / 32) * Math.PI * 2;
+        g.save();
+        g.rotate(a);
+        g.beginPath();
+        if (i % 2 === 0) {
+          // Straight triangular ray.
+          const hw = DISC * 0.19;
+          g.moveTo(-hw, -RAY_IN);
+          g.lineTo(0, -RAY_OUT);
+          g.lineTo(hw, -RAY_IN);
+        } else {
+          // Flame ray: same span, but swept with a curve on each side.
+          const hw = DISC * 0.17;
+          g.moveTo(-hw, -RAY_IN);
+          g.quadraticCurveTo(-hw * 2.1, -RAY_OUT * 0.62, 0, -RAY_OUT * 0.95);
+          g.quadraticCurveTo(hw * 2.1, -RAY_OUT * 0.62, hw, -RAY_IN);
+        }
+        g.closePath();
+        g.fill();
+        g.stroke();
+        g.restore();
+      }
+
+      // Centre disc.
+      g.beginPath();
+      g.arc(0, 0, DISC, 0, Math.PI * 2);
+      g.fillStyle = GOLD;
+      g.fill();
+      g.stroke();
+
+      // Face: eyes, brows, nose and mouth.
+      g.strokeStyle = OUTLINE;
+      g.fillStyle = OUTLINE;
+      g.lineWidth = Math.max(1.5, H / 450);
+      for (const sd of [-1, 1]) {
+        g.beginPath();
+        g.ellipse(sd * DISC * 0.32, -DISC * 0.12, DISC * 0.1, DISC * 0.13, 0, 0, Math.PI * 2);
+        g.fill();
+        g.beginPath();
+        g.arc(sd * DISC * 0.32, -DISC * 0.12, DISC * 0.28, Math.PI * 1.15, Math.PI * 1.85);
+        g.stroke();
+      }
+      g.beginPath();
+      g.moveTo(0, -DISC * 0.16);
+      g.quadraticCurveTo(DISC * 0.1, DISC * 0.12, 0, DISC * 0.2);
+      g.stroke();
+      g.beginPath();
+      g.arc(0, DISC * 0.18, DISC * 0.42, Math.PI * 0.22, Math.PI * 0.78);
+      g.stroke();
+      g.restore();
+
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.anisotropy = 8;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    }
+
     // --- Cloth flag ----------------------------------------------------------
     // 32 x 16 = 512 particles in a grid, held together by distance constraints
     // and integrated with Verlet. Structural links join neighbours, shear links
@@ -1990,8 +2794,8 @@
     const FLAG_COLS = 32;
     const FLAG_ROWS = 16;
     const FLAG_COUNT = FLAG_COLS * FLAG_ROWS; // 512
-    const FLAG_W = 3.6;
     const FLAG_H = 2.4;
+    const FLAG_W = (FLAG_H * 14) / 9; // official Argentine ratio is 9:14
 
     function createFlagCloth() {
       const dx = FLAG_W / (FLAG_COLS - 1);
@@ -2034,25 +2838,11 @@
       }
       const linkArr = new Float32Array(links);
 
-      // Geometry: one vertex per particle, tricolour applied by column.
+      // Geometry: one vertex per particle; the flag itself is a texture, mapped
+      // through the plane's UVs, which the cloth solver never touches.
       const geo = new THREE.PlaneGeometry(FLAG_W, FLAG_H, FLAG_COLS - 1, FLAG_ROWS - 1);
-      const colors = new Float32Array(FLAG_COUNT * 3);
-      const blue = new THREE.Color(0x0d2f8f);
-      const white = new THREE.Color(0xf2f2f2);
-      const red = new THREE.Color(0xd0202f);
-      for (let r = 0; r < FLAG_ROWS; r++) {
-        for (let c = 0; c < FLAG_COLS; c++) {
-          const t = c / (FLAG_COLS - 1);
-          const col = t < 1 / 3 ? blue : t < 2 / 3 ? white : red;
-          const i = (r * FLAG_COLS + c) * 3;
-          colors[i] = col.r;
-          colors[i + 1] = col.g;
-          colors[i + 2] = col.b;
-        }
-      }
-      geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
       const mat = new THREE.MeshPhongMaterial({
-        vertexColors: true,
+        map: makeArgentineFlagTexture(),
         side: THREE.DoubleSide,
         shininess: 12
       });
@@ -2405,6 +3195,307 @@
       return house;
     }
 
+    // --- Church --------------------------------------------------------------
+    // A large rural parish church: the tower is deliberately high enough to be
+    // a useful landmark, while the nave has per-wall collision so it is entered
+    // through the open main door instead of behaving as a solid scenery block.
+    function createChurch() {
+      const W = 14, D = 28, EAVE = 10.8, RISE = 4.5, T = 0.42;
+      const DOOR_W = 2.8, DOOR_H = 3.5;
+      const church = new THREE.Group();
+      const churchStone = new THREE.MeshPhongMaterial({
+        color: 0xaaa398, shininess: 3, side: THREE.DoubleSide
+      });
+      const darkStone = new THREE.MeshPhongMaterial({ color: 0x57544e, shininess: 4 });
+      const slate = new THREE.MeshPhongMaterial({ color: 0x3b4146, shininess: 7 });
+      const oak = new THREE.MeshPhongMaterial({ color: 0x57331b, shininess: 12 });
+      const pewOak = new THREE.MeshPhongMaterial({ color: 0x7a4b27, shininess: 9 });
+      const bronze = new THREE.MeshPhongMaterial({ color: 0xa9782b, shininess: 42 });
+      const black = new THREE.MeshPhongMaterial({ color: 0x202326, shininess: 28 });
+      const belfryDark = new THREE.MeshBasicMaterial({ color: 0x141313 });
+
+      function block(w, h, d, x, y, z, mat = churchStone) {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+        mesh.position.set(x, y, z);
+        church.add(mesh);
+        return mesh;
+      }
+      function cylinder(r1, r2, h, x, y, z, mat, sides = 12) {
+        const mesh = new THREE.Mesh(new THREE.CylinderGeometry(r1, r2, h, sides), mat);
+        mesh.position.set(x, y, z);
+        church.add(mesh);
+        return mesh;
+      }
+      function frontPortal(z, width, height, doorway = DOOR_W, doorHeight = DOOR_H) {
+        const side = (width - doorway) / 2;
+        block(side, height, T, -(doorway / 2 + side / 2), height / 2, z);
+        block(side, height, T, doorway / 2 + side / 2, height / 2, z);
+        block(doorway, height - doorHeight, T, 0, doorHeight + (height - doorHeight) / 2, z);
+      }
+      const windowCenters = [-9, -3, 3, 9];
+      const WINDOW_SILL = 4.2, WINDOW_HEAD = 8.3, WINDOW_HALF = .975;
+      function sideNaveWall(side) {
+        const x = side * (W / 2 - T / 2);
+        block(T, WINDOW_SILL, D, x, WINDOW_SILL / 2, 0);
+        block(T, EAVE - WINDOW_HEAD, D, x, WINDOW_HEAD + (EAVE - WINDOW_HEAD) / 2, 0);
+        let edge = -D / 2;
+        for (const z of windowCenters) {
+          const start = z - WINDOW_HALF;
+          if (start > edge) {
+            block(T, WINDOW_HEAD - WINDOW_SILL, start - edge, x,
+              (WINDOW_SILL + WINDOW_HEAD) / 2, (start + edge) / 2);
+          }
+          edge = z + WINDOW_HALF;
+        }
+        if (edge < D / 2) {
+          block(T, WINDOW_HEAD - WINDOW_SILL, D / 2 - edge, x,
+            (WINDOW_SILL + WINDOW_HEAD) / 2, (D / 2 + edge) / 2);
+        }
+      }
+
+      // Nave: a real lower floor and four wall strips with a portal-sized gap.
+      const floorCanvas = document.createElement('canvas');
+      floorCanvas.width = floorCanvas.height = 256;
+      const floorCtx = floorCanvas.getContext('2d');
+      floorCtx.fillStyle = '#9a7042';
+      floorCtx.fillRect(0, 0, 256, 256);
+      for (let y = 0; y < 256; y += 24) {
+        floorCtx.fillStyle = 'rgba(54,28,12,.34)';
+        floorCtx.fillRect(0, y + 21, 256, 3);
+        for (let x = (y / 24) % 2 ? -20 : 0; x < 276; x += 64) {
+          floorCtx.fillStyle = 'rgba(255,235,180,.10)';
+          floorCtx.fillRect(x + 2, y + 2, 58, 2);
+          floorCtx.fillStyle = 'rgba(58,31,13,.16)';
+          floorCtx.fillRect(x + 60, y + 3, 2, 18);
+        }
+      }
+      const floorTex = new THREE.CanvasTexture(floorCanvas);
+      floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
+      floorTex.repeat.set(7, 9);
+      const floorMat = new THREE.MeshPhongMaterial({ map: floorTex, color: 0xc09a62, shininess: 8 });
+      block(W - T * 2, 0.12, D - T * 2, 0, 0.06, 0, floorMat);
+      frontPortal(D / 2 - T / 2, W, EAVE);
+      block(W, EAVE, T, 0, EAVE / 2, -D / 2 + T / 2);
+      sideNaveWall(-1);
+      sideNaveWall(1);
+
+      // Upper side galleries begin at the window sills. The open centre keeps
+      // the lower nave readable while giving the interior a second storey.
+      const GALLERY_Y = WINDOW_SILL - .08, GALLERY_OPEN = 3.4;
+      const innerWidth = W - T * 2;
+      const galleryWidth = (innerWidth - GALLERY_OPEN) / 2;
+      const galleryX = GALLERY_OPEN / 2 + galleryWidth / 2;
+      for (const side of [-1, 1]) {
+        block(galleryWidth, .16, D - T * 2, side * galleryX, GALLERY_Y, 0, floorMat);
+        const railX = side * (GALLERY_OPEN / 2 + .06);
+        block(.12, .82, D - T * 2, railX, GALLERY_Y + .49, 0, oak);
+        for (let z = -12; z <= 12; z += 2) {
+          block(.07, .68, .07, railX, GALLERY_Y + .43, z, oak);
+        }
+      }
+
+      // Plinth and buttresses give the nave a heavy, period masonry silhouette.
+      block(W + .38, .45, D + .38, 0, .225, 0, darkStone);
+      for (const z of [-10.5, -5.3, 0, 5.3, 10.5]) {
+        for (const x of [-W / 2 - .16, W / 2 + .16]) {
+          block(.78, 7.3, .95, x, 3.65, z);
+          block(.98, .34, 1.16, x, .17, z, darkStone);
+        }
+      }
+      for (const x of [-4.8, 0, 4.8]) {
+        block(.95, 7.1, .76, x, 3.55, -D / 2 - .14);
+        block(.95, 7.1, .76, x, 3.55, D / 2 + .14);
+      }
+
+      // The tall gable and slate slopes are left open below, so the interior
+      // keeps its cathedral-like volume rather than being capped at head height.
+      const gable = new THREE.Shape();
+      gable.moveTo(-W / 2, 0);
+      gable.lineTo(W / 2, 0);
+      gable.lineTo(0, RISE);
+      gable.closePath();
+      // The tower replaces the front gable. Keeping the stone gable only at
+      // the rear avoids stray triangular roof pieces flanking the tower.
+      const rearGable = new THREE.Mesh(new THREE.ShapeGeometry(gable), churchStone);
+      rearGable.position.set(0, EAVE, -D / 2 - .012);
+      rearGable.rotation.y = Math.PI;
+      church.add(rearGable);
+      // One-sided inner cap: closes the tower-facing upper wall for the player
+      // inside without returning exterior roof fragments around the tower.
+      const frontInteriorGable = new THREE.Mesh(
+        new THREE.ShapeGeometry(gable),
+        new THREE.MeshPhongMaterial({ color: 0xaaa398, shininess: 3, side: THREE.FrontSide })
+      );
+      frontInteriorGable.position.set(0, EAVE, D / 2 - .012);
+      frontInteriorGable.rotation.y = Math.PI;
+      church.add(frontInteriorGable);
+      const roofRun = W / 2;
+      const roofSlope = Math.hypot(roofRun, RISE);
+      const roofPitch = Math.atan2(RISE, roofRun);
+      const ROOF_OVER = .28, ROOF_THICKNESS = .18, ROOF_DEPTH = D - 1.0;
+      const roofOffX = (roofRun / roofSlope) * (ROOF_OVER / 2) + (RISE / roofSlope) * (ROOF_THICKNESS / 2);
+      const roofOffY = -(RISE / roofSlope) * (ROOF_OVER / 2) + (roofRun / roofSlope) * (ROOF_THICKNESS / 2);
+      for (const side of [-1, 1]) {
+        const slab = block(
+          roofSlope + ROOF_OVER, ROOF_THICKNESS, ROOF_DEPTH,
+          side * (roofRun / 2 + roofOffX), EAVE + RISE / 2 + roofOffY, -.5, slate
+        );
+        slab.rotation.z = -side * roofPitch;
+      }
+      block(.34, .18, ROOF_DEPTH, 0, EAVE + RISE + .04, -.5, slate);
+
+      // Tower overlaps the front porch. Its lower arch remains open, while the
+      // bell stage and spire carry the landmark high above the other buildings.
+      const TW = 5.5, TD = 4.8, towerZ = D / 2 + TD / 2 - .15, towerFront = towerZ + TD / 2;
+      const naveFront = D / 2 - T / 2;
+      // Stone flags span the tower vestibule, replacing the exposed grass
+      // between the open outer door and the nave's oak floor.
+      block(TW - .18, .12, towerFront - naveFront + .32, 0, .06,
+        (towerFront + naveFront) / 2, darkStone);
+      frontPortal(towerFront, TW, 13.8);
+      block(.46, 13.8, TD, -TW / 2 + .23, 6.9, towerZ);
+      block(.46, 13.8, TD, TW / 2 - .23, 6.9, towerZ);
+      // A genuine open belfry: solid lower and upper courses, side walls, and
+      // a deep shadowed back wall leave the bell inside the tower, not in front
+      // of a painted-on window.
+      block(TW, .55, TD, 0, 14.08, towerZ, darkStone);
+      block(TW, 1.85, TD, 0, 21.0, towerZ);
+      block(.46, 6.3, TD, -TW / 2 + .23, 17.0, towerZ);
+      block(.46, 6.3, TD, TW / 2 - .23, 17.0, towerZ);
+      block(TW - .72, 6.3, .42, 0, 17.0, towerZ - TD / 2 + .21, belfryDark);
+      block(.58, 6.3, .46, -TW / 2 + .29, 17.0, towerFront - .23, darkStone);
+      block(.58, 6.3, .46, TW / 2 - .29, 17.0, towerFront - .23, darkStone);
+      for (const x of [-TW / 2 - .08, TW / 2 + .08]) block(.58, 22.2, .58, x, 11.1, towerZ, darkStone);
+      for (const z of [towerFront + .1, towerZ - TD / 2 - .1]) {
+        block(.58, 22.2, .58, -TW / 2, 11.1, z, darkStone);
+        block(.58, 22.2, .58, TW / 2, 11.1, z, darkStone);
+      }
+
+      // Belfry opening, a bell recessed behind its arch, and a clock face.
+      const bell = new THREE.Group();
+      bell.position.set(0, 17.15, towerFront - .78);
+      // A single hollow casting keeps the crown, skirt, and lip from reading
+      // as separate floating gold pieces, while still showing an open bell.
+      const bellProfile = [
+        new THREE.Vector2(0, .82),
+        new THREE.Vector2(.18, .76),
+        new THREE.Vector2(.48, .58),
+        new THREE.Vector2(.61, .28),
+        new THREE.Vector2(.70, -.22),
+        new THREE.Vector2(.80, -.48),
+        new THREE.Vector2(.80, -.58),
+        new THREE.Vector2(.70, -.64),
+        new THREE.Vector2(.64, -.54),
+        new THREE.Vector2(.62, -.18),
+        new THREE.Vector2(.53, .25),
+        new THREE.Vector2(.38, .55),
+        new THREE.Vector2(.12, .68),
+        new THREE.Vector2(0, .70)
+      ];
+      const bellBody = new THREE.Mesh(new THREE.LatheGeometry(bellProfile, 24), bronze);
+      bell.add(bellBody);
+      const clapper = new THREE.Mesh(new THREE.SphereGeometry(.13, 10, 8), black);
+      clapper.position.y = -.84;
+      bell.add(clapper);
+      church.add(bell);
+      // The crown is hung from a visible iron rod and oak yoke, rather than
+      // floating inside the opening.
+      cylinder(.08, .08, 2.9, 0, 19.35, towerFront - .78, black, 8);
+      block(2.35, .18, .26, 0, 20.82, towerFront - .78, oak);
+      const CLOCK_Y = 10.8;
+      const CLOCK_FACE_Z = towerFront + T / 2 + .025;
+      const face = new THREE.Mesh(
+        new THREE.CircleGeometry(.88, 24),
+        new THREE.MeshPhongMaterial({ color: 0xe7e1cd, shininess: 18 })
+      );
+      face.position.set(0, CLOCK_Y, CLOCK_FACE_Z);
+      church.add(face);
+      for (const angle of [0, Math.PI * .65]) {
+        const hand = new THREE.Mesh(new THREE.BoxGeometry(.07, .48, .04), black);
+        hand.position.set(Math.sin(angle) * .2, CLOCK_Y + Math.cos(angle) * .2, CLOCK_FACE_Z + .04);
+        hand.rotation.z = -angle;
+        church.add(hand);
+      }
+      const spire = new THREE.Mesh(new THREE.ConeGeometry(4.5, 9.4, 4), slate);
+      spire.position.set(0, 26.63, towerZ);
+      spire.rotation.y = Math.PI / 4;
+      church.add(spire);
+      block(.18, 2.1, .18, 0, 32.2, towerZ, bronze);
+      block(1.15, .18, .18, 0, 32.7, towerZ, bronze);
+
+      // Stained glass sits in genuine wall openings, so the nave remains
+      // visible through the panes instead of being hidden by a backing block.
+      function stainedWindow(side, z, color) {
+        const x = side * (W / 2 + .025);
+        const glass = new THREE.Mesh(
+          new THREE.PlaneGeometry(1.62, 3.8),
+          new THREE.MeshBasicMaterial({
+            color, transparent: true, opacity: .64, side: THREE.DoubleSide, depthWrite: false
+          })
+        );
+        glass.rotation.y = Math.PI / 2;
+        glass.position.set(x, 6.25, z);
+        glass.userData.noShadow = true;
+        church.add(glass);
+        block(.13, 4.1, .13, x, 6.25, z - .91, oak);
+        block(.13, 4.1, .13, x, 6.25, z + .91, oak);
+        block(.13, .13, 1.9, x, 4.25, z, oak);
+        block(.13, .13, 1.9, x, 8.25, z, oak);
+        block(.15, .12, 1.72, x, 6.25, z, oak);
+      }
+      const glassColors = [0x315b9e, 0x9a3033, 0x3d7456, 0x71508f];
+      windowCenters.forEach((z, i) => {
+        stainedWindow(-1, z, glassColors[i]);
+        stainedWindow(1, z, glassColors[(i + 1) % glassColors.length]);
+      });
+
+      // The doors are visibly propped open, preserving the walkable doorway.
+      block(DOOR_W + .7, .3, .5, 0, DOOR_H + .18, towerFront + .1, darkStone);
+      block(.34, DOOR_H + .48, .5, -DOOR_W / 2 - .18, (DOOR_H + .22) / 2, towerFront + .1, darkStone);
+      block(.34, DOOR_H + .48, .5, DOOR_W / 2 + .18, (DOOR_H + .22) / 2, towerFront + .1, darkStone);
+      for (const side of [-1, 1]) {
+        const leaf = block(DOOR_W / 2, DOOR_H, .14, side * (DOOR_W / 2 + .34), DOOR_H / 2, towerFront + .2, oak);
+        leaf.rotation.y = side * Math.PI / 2;
+      }
+
+      // Interior furnishings leave a broad centre aisle for the runner.
+      for (let row = 0; row < 7; row++) {
+        const z = -8.4 + row * 2.1;
+        for (const x of [-3.45, 3.45]) {
+          block(2.55, .18, .4, x, .92, z, pewOak);
+          block(2.55, .14, .24, x, .47, z + .34, oak);
+          for (const dx of [-1.08, 1.08]) {
+            block(.15, .86, .15, x + dx, .43, z + .2, oak);
+            block(.15, .86, .15, x + dx, .43, z - .2, oak);
+          }
+        }
+      }
+      block(W - 1.0, .45, 2.2, 0, .225, -D / 2 + 1.2, darkStone);
+      block(3.0, 1.12, .95, 0, .9, -D / 2 + 1.65, pewOak);
+      block(3.3, .14, 1.16, 0, 1.52, -D / 2 + 1.65, oak);
+      block(.2, 2.6, .14, 0, 4.15, -D / 2 + .32, oak);
+      block(1.45, .2, .14, 0, 4.72, -D / 2 + .32, oak);
+
+      church.traverse((node) => {
+        if (node.isMesh) {
+          node.castShadow = !node.userData.noShadow;
+          node.receiveShadow = true;
+        }
+      });
+
+      // Only the four real walls are solid. The front is split around the
+      // doorway so the lower interior remains accessible on foot.
+      const sideW = (W - DOOR_W) / 2;
+      church.userData.colliderBoxes = [
+        { x: -W / 2 + T / 2, z: 0, w: T, d: D, h: EAVE },
+        { x: W / 2 - T / 2, z: 0, w: T, d: D, h: EAVE },
+        { x: 0, z: -D / 2 + T / 2, w: W, d: T, h: EAVE },
+        { x: -(DOOR_W / 2 + sideW / 2), z: D / 2 - T / 2, w: sideW, d: T, h: EAVE },
+        { x: DOOR_W / 2 + sideW / 2, z: D / 2 - T / 2, w: sideW, d: T, h: EAVE }
+      ];
+      return church;
+    }
+
     function createUnit(color) {
       const unit = new THREE.Group();
       const bodyColor = new THREE.Color(color);
@@ -2683,136 +3774,1007 @@
       return unit;
     }
 
-    // --- Variant catalogue --------------------------------------------------
-    // Four of each type. Same silhouette, different proportions, materials and
-    // paint — the parameterisation that lets a handful of types fill a village.
-    const HOUSE_VARIANTS = [
-      { width: 8.0, depth: 10.0, eave: 5.6, rise: 2.6, roof: 0x4d4a4e, trim: 0x3d3227 },
-      { width: 7.0, depth: 9.0, eave: 5.2, rise: 2.4, plaster: true, roof: 0x6b4433,
-        trim: 0x2f4a35, shutters: true },
-      { width: 9.0, depth: 11.0, eave: 6.1, rise: 3.0, roof: 0x7a4a38, trim: 0x40515c },
-      { width: 7.5, depth: 9.5, eave: 5.4, rise: 3.1, plaster: true, roof: 0x565259,
-        trim: 0x5d2b2b, shutters: true }
+    // =====================================================================
+    // Build the town: roads, river, bridges, and a warehouse at each crossing
+    // =====================================================================
+    const roadMat = new THREE.MeshStandardMaterial({ color: 0x585450, roughness: 0.95 });
+    const quayRoadMat = new THREE.MeshStandardMaterial({ color: 0x615c56, roughness: 0.95 });
+    const kerbMat = new THREE.MeshStandardMaterial({ color: 0xb9b3a6, roughness: 0.8 });
+
+    const roadGroup = new THREE.Group();
+    for (const r of roads) {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(r.w, 0.08, r.d),
+        r.kind === "quay" ? quayRoadMat : roadMat
+      );
+      mesh.position.set(r.x, 0.04, r.z);
+      mesh.receiveShadow = true;
+      roadGroup.add(mesh);
+    }
+    // Pads hide the seam where two roads cross.
+    const BANK = CANAL_W / 2 + 0.2; // nothing may cross this line onto the water
+    for (const j of junctions) {
+      const size = Math.abs(j.z - CANAL_Z) === QUAY ? QUAY_W : ROAD_W;
+
+      // Clip the pad against the bank so it stops at the quay edge instead of
+      // cantilevering out over the river.
+      let padD = size + 1.2;
+      let padZ = j.z;
+      const sd = Math.sign(j.z - CANAL_Z) || 1;
+      const inner = Math.abs(j.z - CANAL_Z) - padD / 2;
+      if (inner < BANK) {
+        const outer = Math.abs(j.z - CANAL_Z) + padD / 2;
+        padD = outer - BANK;
+        padZ = CANAL_Z + sd * (BANK + padD / 2);
+      }
+      const pad = new THREE.Mesh(new THREE.BoxGeometry(size + 1.2, 0.09, padD), quayRoadMat);
+      pad.position.set(j.x, 0.045, padZ);
+      pad.receiveShadow = true;
+      roadGroup.add(pad);
+
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          const pz = j.z + sz * (size / 2 + 0.7);
+          if (Math.abs(pz - CANAL_Z) < BANK) continue; // would sit over the water
+          const post = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.35, 0.5), kerbMat);
+          post.position.set(j.x + sx * (size / 2 + 0.7), 0.17, pz);
+          post.castShadow = true;
+          roadGroup.add(post);
+        }
+      }
+    }
+    scene.add(roadGroup);
+
+    // --- Street sandbag barricades ------------------------------------------
+    // Straight, square-edged sandbag courses form proper house-to-house street
+    // blocks. Each course is exactly aligned over the last, rather than offset.
+    const SANDBAG_LAYER_H = 2.5 / 8;
+    const SANDBAG_LAYERS = 8;
+    const sandbagGeo = new THREE.BoxGeometry(0.92, SANDBAG_LAYER_H, 0.52);
+    const sandbagMats = [
+      new THREE.MeshPhongMaterial({ color: 0x9a8358, shininess: 2 }),
+      new THREE.MeshPhongMaterial({ color: 0x87734f, shininess: 2 }),
+      new THREE.MeshPhongMaterial({ color: 0xa18b62, shininess: 2 })
     ];
 
-    const SHOP_VARIANTS = [
-      { width: 6.5, paint: 0x2f4a35, awning: 0x2f4a35, roof: 0x4d4a4e, plaster: true,
-        shutters: true },
-      { width: 7.0, paint: 0x5d2b2b, awning: 0x5d2b2b, roof: 0x6b4433 },
-      { width: 6.0, paint: 0x2b4256, awning: 0x2b4256, roof: 0x565259, plaster: true,
-        shutters: true },
-      { width: 7.5, paint: 0x8a6a24, awning: 0x8a6a24, roof: 0x7a4a38 }
+    function createSandbagBarricade(length) {
+      const barricade = new THREE.Group();
+      const bagCount = Math.max(5, Math.ceil(length / 0.92));
+      const addBag = (x, y, index) => {
+        const bag = new THREE.Mesh(sandbagGeo, sandbagMats[index % sandbagMats.length]);
+        bag.position.set(x, y, 0);
+        barricade.add(bag);
+      };
+
+      for (let layer = 0; layer < SANDBAG_LAYERS; layer++) {
+        for (let i = 0; i < bagCount; i++) {
+          addBag(
+            (i - (bagCount - 1) / 2) * 0.92,
+            SANDBAG_LAYER_H / 2 + layer * SANDBAG_LAYER_H,
+            i + layer * bagCount
+          );
+        }
+      }
+
+      barricade.traverse((node) => {
+        if (node.isMesh) {
+          node.castShadow = true;
+          node.receiveShadow = true;
+        }
+      });
+      barricade.userData.colliderBoxes = [{ x: 0, z: 0, w: bagCount * 0.92, d: 0.64, h: 2.5 }];
+      return barricade;
+    }
+
+    const minimapSandbagWalls = [];
+    [
+      // The first inland rows, not the quay: each wall crosses a whole street
+      // from one house frontage to the other. Both street directions are used.
+      { x: -125, z: 64, rot: Math.PI / 2, length: 20 },
+      { x: -25, z: 64, rot: Math.PI / 2, length: 20 },
+      { x: 75, z: 64, rot: Math.PI / 2, length: 20 },
+      { x: 175, z: 64, rot: Math.PI / 2, length: 20 },
+      { x: -175, z: -64, rot: Math.PI / 2, length: 20 },
+      { x: -125, z: -64, rot: Math.PI / 2, length: 20 },
+      { x: 75, z: -64, rot: Math.PI / 2, length: 20 },
+      { x: 125, z: -64, rot: Math.PI / 2, length: 20 },
+      { x: -150, z: 89, rot: 0, length: 20 },
+      { x: 0, z: 89, rot: 0, length: 20 },
+      { x: 50, z: 89, rot: 0, length: 20 },
+      { x: -100, z: -89, rot: 0, length: 20 },
+      { x: 150, z: -89, rot: 0, length: 20 }
+    ].forEach((spec) => {
+      placeBuilding(createSandbagBarricade(spec.length), spec.x, spec.z, spec.rot);
+      const actualLength = Math.ceil(spec.length / 0.92) * 0.92;
+      const turned = Math.abs(Math.sin(spec.rot)) > 0.5;
+      minimapSandbagWalls.push({
+        x: spec.x,
+        z: spec.z,
+        w: turned ? 0.64 : actualLength,
+        d: turned ? actualLength : 0.64
+      });
+    });
+
+    // Every junction gets a simple iron street lamp. The four repeated pieces
+    // are instanced, so the added town detail costs only a handful of draws.
+    const lampIronMat = new THREE.MeshPhongMaterial({ color: 0x252a29, shininess: 40 });
+    const lampGlassMat = new THREE.MeshStandardMaterial({
+      color: 0xf3d994, emissive: 0x3a2a10, emissiveIntensity: 0.55, roughness: 0.35
+    });
+    const lampBaseGeo = new THREE.CylinderGeometry(0.26, 0.32, 0.18, 8);
+    const lampPoleGeo = new THREE.CylinderGeometry(0.07, 0.1, 5.15, 8);
+    const lampArmGeo = new THREE.BoxGeometry(0.9, 0.075, 0.075);
+    const lampHeadGeo = new THREE.BoxGeometry(0.34, 0.32, 0.34);
+    const lampCount = junctions.length;
+    const lampBases = new THREE.InstancedMesh(lampBaseGeo, lampIronMat, lampCount);
+    const lampPoles = new THREE.InstancedMesh(lampPoleGeo, lampIronMat, lampCount);
+    const lampArms = new THREE.InstancedMesh(lampArmGeo, lampIronMat, lampCount);
+    const lampHeads = new THREE.InstancedMesh(lampHeadGeo, lampGlassMat, lampCount);
+    const lampMatrix = new THREE.Matrix4();
+    const lampPosition = new THREE.Vector3();
+    const lampRotation = new THREE.Quaternion();
+    const lampScale = new THREE.Vector3(1, 1, 1);
+    const lampLocations = [];
+
+    junctions.forEach((j, index) => {
+      const size = Math.abs(j.z - CANAL_Z) === QUAY ? QUAY_W : ROAD_W;
+      const column = COLS.indexOf(j.x);
+      const row = ROWS.indexOf(j.z);
+      const sx = (column + row) % 2 ? 1 : -1;
+      const sz = (column - row) % 2 ? 1 : -1;
+      const x = j.x + sx * (size / 2 + 0.72);
+      const z = j.z + sz * (size / 2 + 0.72);
+      const armYaw = Math.atan2(sz, -sx); // local +X points toward the junction
+
+      lampRotation.identity();
+      lampPosition.set(x, 0.09, z);
+      lampMatrix.compose(lampPosition, lampRotation, lampScale);
+      lampBases.setMatrixAt(index, lampMatrix);
+
+      lampPosition.set(x, 0.18 + 5.15 / 2, z);
+      lampMatrix.compose(lampPosition, lampRotation, lampScale);
+      lampPoles.setMatrixAt(index, lampMatrix);
+
+      lampRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), armYaw);
+      const dirX = -sx;
+      const dirZ = -sz;
+      lampPosition.set(x + dirX * 0.42, 5.18, z + dirZ * 0.42);
+      lampMatrix.compose(lampPosition, lampRotation, lampScale);
+      lampArms.setMatrixAt(index, lampMatrix);
+
+      lampRotation.identity();
+      lampPosition.set(x + dirX * 0.83, 5.02, z + dirZ * 0.83);
+      lampMatrix.compose(lampPosition, lampRotation, lampScale);
+      lampHeads.setMatrixAt(index, lampMatrix);
+      lampLocations.push({ x: lampPosition.x, y: lampPosition.y, z: lampPosition.z });
+
+      // A narrow physical post, not an invisible obstruction.
+      colliders.push({ minX: x - 0.24, maxX: x + 0.24, minZ: z - 0.24, maxZ: z + 0.24, maxY: 5.35 });
+    });
+    for (const part of [lampBases, lampPoles, lampArms, lampHeads]) {
+      part.instanceMatrix.needsUpdate = true;
+      part.castShadow = true;
+      part.receiveShadow = true;
+      part.computeBoundingSphere();
+      scene.add(part);
+    }
+
+    // Only the closest lamps receive real point lights. That makes the street
+    // visibly brighter around the player without the cost of 72 live lights.
+    const streetLightPool = [];
+    for (let i = 0; i < 8; i++) {
+      const light = new THREE.PointLight(0xffb35a, 24, 18, 2);
+      light.visible = false;
+      light.castShadow = false;
+      scene.add(light);
+      streetLightPool.push(light);
+    }
+
+    function updateStreetLightPool(lampsOn) {
+      if (!lampsOn) {
+        for (const light of streetLightPool) light.visible = false;
+        return;
+      }
+      const nearest = lampLocations
+        .map((lamp) => ({ lamp, distance: runner.position.distanceToSquared(lamp) }))
+        .sort((a, b) => a.distance - b.distance);
+      for (let i = 0; i < streetLightPool.length; i++) {
+        const light = streetLightPool[i];
+        const candidate = nearest[i];
+        if (!candidate) {
+          light.visible = false;
+          continue;
+        }
+        light.position.set(candidate.lamp.x, candidate.lamp.y, candidate.lamp.z);
+        light.visible = true;
+      }
+    }
+
+    buildCanal();
+    for (const bx of BRIDGE_XS) buildBridge(bx);
+
+    // One warehouse per bridge, set back on the north quay beside the crossing,
+    // gable and hoist facing the water.
+    // bank: +1 north of the river, -1 south. Each warehouse turns to face the
+    // water, so its loading doors and hoist always overlook the quay.
+    const WAREHOUSE_SPECS = [
+      { at: BRIDGE_XS[0], side: -1, bank: 1, opts: { width: 18, depth: 12 } },
+      { at: BRIDGE_XS[1], side: 1, bank: -1,
+        opts: { width: 16, depth: 11, brick: 0x6d4638, roof: 0x3d3a42 } }
     ];
+    for (const spec of WAREHOUSE_SPECS) {
+      const x = spec.at + spec.side * 21;
+      const z = CANAL_Z + spec.bank * (QUAY + 12);
+      placeBuilding(createWarehouse(spec.opts), x, z, spec.bank > 0 ? Math.PI : 0);
 
-    // Houses in a row facing the spawn point.
-    HOUSE_VARIANTS.forEach((opts, i) => {
-      placeBuilding(createHouse(opts), -33 + i * 15, 24, Math.PI);
-    });
+      // Quayside apron and cargo on the same bank.
+      const quayPad = new THREE.Mesh(new THREE.BoxGeometry(34, 0.1, 9), paveMat);
+      quayPad.position.set(x, 0.05, CANAL_Z + spec.bank * (CANAL_W / 2 + 5.5));
+      quayPad.receiveShadow = true;
+      scene.add(quayPad);
 
-    // Shops opposite them.
-    SHOP_VARIANTS.forEach((opts, i) => {
-      placeBuilding(createShop(opts), -24 + i * 13, -24);
-    });
-
-    // A row of five: two shops, three houses, all slightly different.
-    const terrace = createTerrace([
-      { width: 6.2, eave: 5.9, rise: 2.5, shop: true, paint: 0x2b4256, roof: 0x4d4a4e,
-        trim: 0x2b4256 },
-      { width: 5.4, eave: 5.5, rise: 2.2, plaster: true, roof: 0x6b4433, trim: 0x3d3227 },
-      { width: 6.0, eave: 6.2, rise: 2.7, roof: 0x7a4a38, trim: 0x2f4a35 },
-      { width: 5.2, eave: 5.4, rise: 2.1, plaster: true, roof: 0x565259, trim: 0x5d2b2b },
-      { width: 6.6, eave: 5.8, rise: 2.4, shop: true, paint: 0x8a6a24, roof: 0x59453d,
-        trim: 0x8a6a24 }
-    ]);
-    placeBuilding(terrace, -14, 46, Math.PI);
-
-    // Four café-tabac variants, on their own row clear of the shops.
-    const CAFE_VARIANTS = [
-      { width: 8.5, paint: 0x7a2f2f, awning: 0x7a2f2f, roof: 0x4d4a4e, plaster: true,
-        shutters: true, awningProj: 2.3, rail: 0x394034, tables: 3 },
-      { width: 9.2, paint: 0x1f4d47, awning: 0x1f4d47, roof: 0x6b4433,
-        awningProj: 2.7, rail: 0x1f4d47, tables: 4, terraceDepth: 3.4 },
-      { width: 8.0, paint: 0x2b3f63, awning: 0xe4dcc6, roof: 0x565259, plaster: true,
-        awningProj: 2.0, rail: 0x2b3f63, tables: 2, terraceDepth: 2.6 },
-      { width: 9.8, paint: 0x8a5a1e, awning: 0x8a5a1e, roof: 0x7a4a38,
-        shutters: true, awningProj: 2.9, rail: 0x40352a, tables: 4, terraceDepth: 3.6 }
-    ];
-
-    CAFE_VARIANTS.forEach((opts, i) => {
-      placeBuilding(createShop({ ...opts, cafe: true }), -30 + i * 20, -46);
-    });
+      const crateMat = new THREE.MeshPhongMaterial({ color: 0x6b5433, shininess: 6 });
+      const barrelMat = new THREE.MeshPhongMaterial({ color: 0x4f3a28, shininess: 10 });
+      for (let i = 0; i < 7; i++) {
+        const crateW = rand(0.9, 1.5);
+        const crateH = rand(0.8, 1.2);
+        const crateD = rand(0.9, 1.4);
+        const crateX = x + rand(-14, 14);
+        const crateZ = CANAL_Z + spec.bank * (CANAL_W / 2 + rand(3, 8));
+        const crateRot = rand(0, 3.14);
+        const c = new THREE.Mesh(
+          new THREE.BoxGeometry(crateW, crateH, crateD),
+          crateMat
+        );
+        c.position.set(crateX, 0.6, crateZ);
+        c.rotation.y = crateRot;
+        c.castShadow = true;
+        scene.add(c);
+        // Use the rotated crate's enclosing footprint so the runner cannot
+        // cut through a corner of cargo.
+        const absCos = Math.abs(Math.cos(crateRot));
+        const absSin = Math.abs(Math.sin(crateRot));
+        const halfX = (absCos * crateW + absSin * crateD) / 2;
+        const halfZ = (absSin * crateW + absCos * crateD) / 2;
+        colliders.push({
+          minX: crateX - halfX, maxX: crateX + halfX,
+          minZ: crateZ - halfZ, maxZ: crateZ + halfZ,
+          maxY: 0.6 + crateH / 2
+        });
+      }
+      for (let i = 0; i < 5; i++) {
+        const b = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 1.0, 12), barrelMat);
+        const barrelX = x + rand(-14, 14);
+        const barrelZ = CANAL_Z + spec.bank * (CANAL_W / 2 + rand(3, 8));
+        b.position.set(barrelX, 0.55, barrelZ);
+        b.castShadow = true;
+        scene.add(b);
+        colliders.push({
+          minX: barrelX - 0.42, maxX: barrelX + 0.42,
+          minZ: barrelZ - 0.42, maxZ: barrelZ + 0.42,
+          maxY: 1.05
+        });
+      }
+    }
 
     // --- Place de la Mairie --------------------------------------------------
-    // Set well back from the town so it reads as a landmark across the fields.
-    const HALL_Z = -120;
-    const CY_W = 46;        // courtyard width
-    const CY_D = 30;        // courtyard depth in front of the building
-    const townHall = placeBuilding(createTownHall(), 0, HALL_Z);
+    // The complete fenced courtyard is one south-bank block farther from the
+    // river, with its gate landing directly at the edge of the street.
+    const TOWN_HALL_X = GRID / 2;
+    const TOWN_HALL_Z = -(QUAY + GRID / 2) - GRID - 11.5;
+    const CY_W = 40;
+    const CY_D = 20;
+    placeBuilding(createTownHall(), TOWN_HALL_X, TOWN_HALL_Z);
 
-    const courtyardZ = HALL_Z + 7.5 + CY_D / 2;
-    const HALL_FRONT = HALL_Z + 7.5;        // front face of the building
-    const GATE_Z = courtyardZ + CY_D / 2;   // fence line with the gate
+    const courtyardZ = TOWN_HALL_Z + 7.5 + CY_D / 2;
+    const HALL_FRONT = TOWN_HALL_Z + 7.5;
+    const GATE_Z = courtyardZ + CY_D / 2;
 
-    // Only a path and an apron are paved; the rest of the courtyard is grass.
+    // Only the central approach and the entrance apron are paved; the rest is
+    // the original green mairie garden.
     const path = new THREE.Mesh(
       new THREE.BoxGeometry(4.5, 0.08, GATE_Z - (HALL_FRONT + 2.5)),
       paveMat
     );
-    path.position.set(0, 0.04, (GATE_Z + HALL_FRONT + 2.5) / 2);
+    path.position.set(TOWN_HALL_X, 0.04, (GATE_Z + HALL_FRONT + 2.5) / 2);
     path.receiveShadow = true;
     scene.add(path);
 
     const apron = new THREE.Mesh(new THREE.BoxGeometry(14, 0.08, 5), paveMat);
-    apron.position.set(0, 0.04, HALL_FRONT + 2.5);
+    apron.position.set(TOWN_HALL_X, 0.04, HALL_FRONT + 2.5);
     apron.receiveShadow = true;
     scene.add(apron);
 
-    // Fence: front run with the gate, two sides, and short returns closing the
-    // gap between the building's corners and the side runs at the back.
+    // Front fence with its gate, side runs, and short rear returns at the
+    // mairie corners — the same layout as the original courtyard.
     const fenceFront = createFenceRun(CY_W, 7);
-    placeBuilding(fenceFront, 0, GATE_Z);
+    placeBuilding(fenceFront, TOWN_HALL_X, GATE_Z);
     for (const sd of [-1, 1]) {
       const side = createFenceRun(CY_D);
-      placeBuilding(side, (sd * CY_W) / 2, courtyardZ, Math.PI / 2);
+      placeBuilding(side, TOWN_HALL_X + (sd * CY_W) / 2, courtyardZ, Math.PI / 2);
 
       const HALL_HALF = 15;
       const gap = CY_W / 2 - HALL_HALF;
       const closer = createFenceRun(gap);
-      placeBuilding(closer, sd * (HALL_HALF + gap / 2), HALL_FRONT);
+      placeBuilding(
+        closer,
+        TOWN_HALL_X + sd * (HALL_HALF + gap / 2),
+        HALL_FRONT
+      );
     }
 
-    // Trees, all comfortably inside the railings and clear of the path.
     const treeSpots = [
-      [-17, 4], [-17, -6], [17, 4], [17, -6],
-      [-10, 10], [10, 10], [-19, 11], [19, 11],
-      [-11, -9], [11, -9]
+      [-14, 3], [-14, -5], [14, 3], [14, -5],
+      [-8, 6], [8, 6], [-16, 6], [16, 6],
+      [-9, -7], [9, -7]
     ];
     treeSpots.forEach(([x, dz], i) => {
       const tree = createTree(0.85 + ((i * 37) % 40) / 100);
-      tree.position.set(x, 0, courtyardZ + dz);
+      tree.position.set(TOWN_HALL_X + x, 0, courtyardZ + dz);
       tree.rotation.y = i * 1.1;
       scene.add(tree);
     });
 
-    // Bushes hugging the railings, gate left clear.
     for (let i = 0; i < 16; i++) {
       const t = i / 15;
       const x = -CY_W / 2 + 1.2 + t * (CY_W - 2.4);
       if (Math.abs(x) < 5) continue;
       const bush = createBush(0.6 + ((i * 53) % 30) / 100);
-      bush.position.set(x, 0, GATE_Z - 1.5);
+      bush.position.set(TOWN_HALL_X + x, 0, GATE_Z - 1.5);
       scene.add(bush);
     }
     for (const sd of [-1, 1]) {
-      for (let i = 0; i < 7; i++) {
+      for (let i = 0; i < 5; i++) {
         const bush = createBush(0.55 + ((i * 41) % 30) / 100);
-        bush.position.set(sd * (CY_W / 2 - 1.5), 0, HALL_FRONT + 3 + i * 3.8);
+        bush.position.set(
+          TOWN_HALL_X + sd * (CY_W / 2 - 1.5),
+          0,
+          HALL_FRONT + 3 + i * 3.5
+        );
         scene.add(bush);
       }
     }
 
-    // --- Flagpole ------------------------------------------------------------
+    // --- Church, east side of the north bank ---------------------------------
+    // Put the church on the east edge of its lot to free the central block and
+    // leave most of this plot clear for later town buildings.
+    const CHURCH_X = COL_MAX - ROAD_W / 2 - 12;
+    const CHURCH_Z = QUAY + GRID + ROAD_W / 2 + 3.3 + 20.8;
+    placeBuilding(createChurch(), CHURCH_X, CHURCH_Z, Math.PI);
+
+    // The existing école model sits sideways in the church-side strip. This
+    // plaster-and-slate variant faces west to the nearby street, rather than
+    // putting its entrance into the church grounds.
+    const SCHOOL_X = CHURCH_X - 21;
+    const SCHOOL_Z = CHURCH_Z - 3;
+    placeBuilding(
+      createSchool({
+        plaster: true,
+        roof: 0x3f4545,
+        rise: 3.25,
+        bays: 8,
+        clearDoorBays: 1
+      }),
+      SCHOOL_X,
+      SCHOOL_Z,
+      -Math.PI / 2
+    );
+
+    // --- West church block: exactly two layers -------------------------------
+    // Three active frontages face the river road, while three homes face the
+    // rear road. Their footprints leave gaps between neighbours and the roads.
+    const WEST_BLOCK_X = COL_MAX - GRID - GRID / 2;
+    const WEST_ROW_X = [WEST_BLOCK_X - 14.5, WEST_BLOCK_X, WEST_BLOCK_X + 14.5];
+    const FRONT_ROW_Z = QUAY + GRID + ROAD_W / 2 + 11;
+    const BACK_ROW_Z = QUAY + GRID * 2 - ROAD_W / 2 - 11;
+
+    placeBuilding(createShop({
+      width: 11,
+      depth: 12,
+      cafe: true,
+      plaster: true,
+      paint: 0x345447,
+      awning: 0xb9a247,
+      roof: 0x414347,
+      terraceDepth: 2.5,
+      tables: 2
+    }), WEST_ROW_X[0], FRONT_ROW_Z, Math.PI);
+    placeBuilding(createHouse({
+      width: 12,
+      depth: 12,
+      plaster: true,
+      roof: 0x694a3c,
+      trim: 0x5b4030,
+      shutters: true
+    }), WEST_ROW_X[1], FRONT_ROW_Z, Math.PI);
+    placeBuilding(createShop({
+      width: 11,
+      depth: 12,
+      plaster: true,
+      paint: 0x4b3d34,
+      awning: 0xa54e3b,
+      roof: 0x414246,
+      shutters: true
+    }), WEST_ROW_X[2], FRONT_ROW_Z, Math.PI);
+
+    placeBuilding(createHouse({
+      width: 12,
+      depth: 14,
+      plaster: true,
+      roof: 0x4c4d4f,
+      trim: 0x294b42,
+      shutters: true
+    }), WEST_ROW_X[0], BACK_ROW_Z);
+    placeBuilding(createHouse({
+      width: 12,
+      depth: 14,
+      roof: 0x5a4037,
+      trim: 0x704330,
+      shutters: true
+    }), WEST_ROW_X[1], BACK_ROW_Z);
+    placeBuilding(createHouse({
+      width: 12,
+      depth: 14,
+      plaster: true,
+      roof: 0x3d4148,
+      trim: 0x36504a,
+      shutters: true
+    }), WEST_ROW_X[2], BACK_ROW_Z);
+
+    // --- Outer rural plots: two building layers per farm ---------------------
+    // These are deliberately confined to the two rear rows on each bank: a
+    // farmhouse faces the nearer road, with its barn behind it and a well in
+    // the space between.
+    const RURAL_PLOTS = [
+      {
+        house: [-132, 126, Math.PI, {
+          width: 15, depth: 8, eave: 4.3, rise: 2.7,
+          plaster: true, roof: 0x62513f
+        }],
+        barn: [-112, 145, {
+          width: 11, depth: 17, eave: 5.8, rise: 3.8,
+          roof: 0x4a4238, doorWidth: 4.0
+        }],
+        barnRotation: Math.PI / 2,
+        well: [-122, 134]
+      },
+      {
+        house: [68, 76, Math.PI, {
+          width: 14, depth: 7, eave: 4.7, rise: 3.1,
+          plaster: true, roof: 0x624d3e
+        }],
+        barn: [88, 95, {
+          width: 13, depth: 18, brick: true, eave: 6.6, rise: 4.4,
+          roof: 0x4b4540, doorWidth: 4.8
+        }],
+        well: [78, 84]
+      },
+      {
+        house: [114, -126, 0, {
+          width: 18, depth: 8.5, eave: 5.0, rise: 3.2,
+          roof: 0x514538
+        }],
+        barn: [137, -145, {
+          width: 14, depth: 16, eave: 6.0, rise: 4.0,
+          roof: 0x463f37, doorWidth: 5.0
+        }],
+        barnRotation: Math.PI / 2,
+        well: [128, -134]
+      },
+      {
+        house: [66, 126, Math.PI, {
+          width: 14, depth: 7.5, eave: 4.4, rise: 2.8,
+          roof: 0x5b4737
+        }],
+        barn: [88, 145, {
+          width: 12, depth: 17, brick: true, eave: 6.3, rise: 4.2,
+          roof: 0x46433e, doorWidth: 4.5
+        }],
+        well: [77, 134]
+      },
+      {
+        house: [-36, -126, 0, {
+          width: 16, depth: 8, eave: 4.6, rise: 3.0,
+          plaster: true, roof: 0x4d4b45
+        }],
+        barn: [-13, -145, {
+          width: 13, depth: 16, eave: 5.9, rise: 3.9,
+          roof: 0x534237, doorWidth: 4.6
+        }],
+        barnRotation: Math.PI / 2,
+        well: [-25, -134]
+      },
+      {
+        house: [-84, 126, Math.PI, {
+          width: 16, depth: 7.5, eave: 4.8, rise: 3.0,
+          roof: 0x5a493a
+        }],
+        barn: [-63, 145, {
+          width: 12, depth: 16, eave: 6.0, rise: 4.0,
+          roof: 0x443e37, doorWidth: 4.2
+        }],
+        barnRotation: Math.PI / 2,
+        well: [-73, 134]
+      },
+      {
+        house: [16, 126, Math.PI, {
+          width: 14, depth: 8, eave: 4.3, rise: 2.7,
+          plaster: true, roof: 0x4b4a45
+        }],
+        barn: [38, 145, {
+          width: 12, depth: 17, brick: true, eave: 6.4, rise: 4.3,
+          roof: 0x4a433d, doorWidth: 4.7
+        }],
+        well: [27, 134]
+      },
+      {
+        house: [64, -126, 0, {
+          width: 15, depth: 8, eave: 4.7, rise: 3.1,
+          roof: 0x58463a
+        }],
+        barn: [87, -145, {
+          width: 12, depth: 16, eave: 5.8, rise: 3.8,
+          roof: 0x49423a, doorWidth: 4.3
+        }],
+        well: [75, -134]
+      }
+    ];
+    for (const plot of RURAL_PLOTS) {
+      placeBuilding(
+        createFarmhouse(plot.house[3]),
+        plot.house[0],
+        plot.house[1],
+        plot.house[2]
+      );
+      placeBuilding(
+        createBarn(plot.barn[2]),
+        plot.barn[0],
+        plot.barn[1],
+        plot.barnRotation || 0
+      );
+      placeBuilding(createWell(), plot.well[0], plot.well[1]);
+    }
+
+    // --- North front-row market: café, shop, café, then a rear terrace ------
+    placeBuilding(createHouse({
+      width: 11, depth: 11, plaster: true,
+      roof: 0x4d4c46, trim: 0x3b544d, shutters: true
+    }), 11, 28, Math.PI);
+    placeBuilding(createShop({
+      width: 12, depth: 11, plaster: true,
+      paint: 0x3d5054, awning: 0xd8d5c7, roof: 0x3b4147,
+      shutters: true
+    }), 25, 28, Math.PI);
+    placeBuilding(createShop({
+      width: 11, depth: 11, cafe: true, plaster: true,
+      paint: 0x6a4636, awning: 0xb74d3d, roof: 0x4b403c,
+      terraceDepth: 1.4, tables: 1
+    }), 39, 28, Math.PI);
+    placeBuilding(createTerrace([
+      { width: 11, roof: 0x51443b, trim: 0x76503a, shutters: true },
+      { width: 12, plaster: true, roof: 0x40484c, trim: 0x34564f, shutters: true },
+      { width: 11, plaster: true, roof: 0x5d4b40, trim: 0x65412f, shutters: true }
+    ], { depth: 10 }), 25, 49);
+
+    // --- North front-row café lane: cafés on one street, shops on the other -
+    placeBuilding(createShop({
+      width: 15, depth: 12, cafe: true, plaster: true,
+      paint: 0x405249, awning: 0xc4a753, roof: 0x42464a,
+      terraceDepth: 1.2, tables: 2
+    }), 63.5, 28, Math.PI);
+    placeBuilding(createHouse({
+      width: 15, depth: 12,
+      roof: 0x62473a, trim: 0x734934, shutters: true
+    }), 86.5, 28, Math.PI);
+    for (const x of [61, 75, 89]) {
+      const variants = {
+        61: { paint: 0x31534c, awning: 0xd6d6c9, roof: 0x3f4449 },
+        75: { paint: 0x664535, awning: 0xb68d43, roof: 0x4b423d },
+        89: { paint: 0x3f4a56, awning: 0xd7d3bf, roof: 0x3c4248 }
+      };
+      placeBuilding(createShop({
+        width: 10, depth: 10, plaster: x !== 75,
+        ...variants[x], shutters: true
+      }), x, 49);
+    }
+
+    // --- South front-row quay market: cafés and a shop with homes behind ----
+    placeBuilding(createShop({
+      width: 10, depth: 11, cafe: true, plaster: true,
+      paint: 0x3b524b, awning: 0xb6a04d, roof: 0x424549,
+      terraceDepth: 1.4, tables: 1
+    }), -39, -28);
+    placeBuilding(createShop({
+      width: 12, depth: 11, plaster: true,
+      paint: 0x624438, awning: 0xc96549, roof: 0x4b413d,
+      shutters: true
+    }), -25, -28);
+    placeBuilding(createShop({
+      width: 10, depth: 11, cafe: true,
+      paint: 0x4d4a40, awning: 0xd4d3c4, roof: 0x3e4548,
+      terraceDepth: 1.4, tables: 1
+    }), -11, -28);
+    placeBuilding(createTerrace([
+      { width: 11, plaster: true, roof: 0x3f484c, trim: 0x38584d, shutters: true },
+      { width: 12, roof: 0x61473a, trim: 0x714733, shutters: true },
+      { width: 11, plaster: true, roof: 0x55463c, trim: 0x59402f, shutters: true }
+    ], { depth: 10 }), -25, -49, Math.PI);
+
+    // --- North river homes: one café among homes and a rear terrace ----------
+    placeBuilding(createHouse({
+      width: 10, depth: 11, plaster: true,
+      roof: 0x4a4c4e, trim: 0x36584e, shutters: true
+    }), -89, 28, Math.PI);
+    placeBuilding(createShop({
+      width: 12, depth: 11, cafe: true,
+      paint: 0x634638, awning: 0xc39e4d, roof: 0x4b433e,
+      terraceDepth: 1.4, tables: 1
+    }), -75, 28, Math.PI);
+    placeBuilding(createHouse({
+      width: 10, depth: 11,
+      roof: 0x60463a, trim: 0x724634, shutters: true
+    }), -61, 28, Math.PI);
+    placeBuilding(createTerrace([
+      { width: 11, plaster: true, roof: 0x3e484d, trim: 0x37574e, shutters: true },
+      { width: 12, roof: 0x62483b, trim: 0x744934, shutters: true },
+      { width: 11, plaster: true, roof: 0x51463f, trim: 0x57412f, shutters: true }
+    ], { depth: 10 }), -75, 49);
+
+    // --- North east terrace block: riverside row houses and rear homes -------
+    placeBuilding(createTerrace([
+      { width: 11, plaster: true, roof: 0x464b4d, trim: 0x36564f, shutters: true },
+      { width: 13, roof: 0x62473b, trim: 0x704532, shutters: true },
+      { width: 11, plaster: true, roof: 0x51443c, trim: 0x60412f, shutters: true }
+    ], { depth: 10.5 }), 125, 28, Math.PI);
+    placeBuilding(createHouse({
+      width: 16, depth: 12, plaster: true,
+      roof: 0x3e464a, trim: 0x34534c, shutters: true
+    }), 115, 49);
+    placeBuilding(createHouse({
+      width: 16, depth: 12,
+      roof: 0x5d453a, trim: 0x704530, shutters: true
+    }), 135, 49);
+
+    // --- South quay block: shop, café, home, and a rear terrace --------------
+    placeBuilding(createShop({
+      width: 11, depth: 11, plaster: true,
+      paint: 0x3b5050, awning: 0xd5d5c7, roof: 0x3d4549,
+      shutters: true
+    }), 11, -28);
+    placeBuilding(createShop({
+      width: 12, depth: 11, cafe: true, plaster: true,
+      paint: 0x63453a, awning: 0xbf5a44, roof: 0x4d403c,
+      terraceDepth: 1.4, tables: 1
+    }), 25, -28);
+    placeBuilding(createHouse({
+      width: 11, depth: 11, plaster: true,
+      roof: 0x51483f, trim: 0x40594d, shutters: true
+    }), 39, -28);
+    placeBuilding(createTerrace([
+      { width: 11, roof: 0x5d483d, trim: 0x714735, shutters: true },
+      { width: 12, plaster: true, roof: 0x3e474b, trim: 0x38564e, shutters: true },
+      { width: 11, plaster: true, roof: 0x51453d, trim: 0x60412f, shutters: true }
+    ], { depth: 10 }), 25, -49, Math.PI);
+
+    // --- South east homes: river terrace with two rear cottages --------------
+    placeBuilding(createTerrace([
+      { width: 11, plaster: true, roof: 0x3e484b, trim: 0x39564d, shutters: true },
+      { width: 13, roof: 0x62463a, trim: 0x734832, shutters: true },
+      { width: 11, plaster: true, roof: 0x55473e, trim: 0x60412f, shutters: true }
+    ], { depth: 10.5 }), 75, -28);
+    placeBuilding(createHouse({
+      width: 16, depth: 12,
+      roof: 0x5b463b, trim: 0x704733, shutters: true
+    }), 65, -49, Math.PI);
+    placeBuilding(createHouse({
+      width: 16, depth: 12, plaster: true,
+      roof: 0x3d464a, trim: 0x35554d, shutters: true
+    }), 85, -49, Math.PI);
+
+    // --- Warehouse school and homes ------------------------------------------
+    // The south-bank warehouse is the only waterside warehouse without a
+    // school nearby. Its open east side fits the school sideways, entrance
+    // facing the east street. The opposite warehouse gets homes behind it.
+    placeBuilding(
+      createSchool({
+        plaster: true,
+        roof: 0x4d4944,
+        rise: 2.85,
+        bays: 8,
+        clearDoorBays: 1
+      }),
+      137.5,
+      -44,
+      Math.PI / 2
+    );
+    for (const [x, opts] of [
+      [-139, { plaster: true, roof: 0x454a4d, trim: 0x3a584f }],
+      [-125, { roof: 0x60463b, trim: 0x704431 }],
+      [-111, { plaster: true, roof: 0x514239, trim: 0x60412f }]
+    ]) {
+      placeBuilding(createHouse({
+        width: 10,
+        depth: 10,
+        shutters: true,
+        ...opts
+      }), x, 49);
+    }
+
+    // --- North front-row market block: two commercial/residential layers -----
+    const NORTH_MARKET_X = -25;
+    const NORTH_MARKET_FRONT_Z = 28;
+    const NORTH_MARKET_BACK_Z = 49;
+    placeBuilding(createHouse({
+      width: 10, depth: 11, plaster: true,
+      roof: 0x51433a, trim: 0x3c554c, shutters: true
+    }), -39, NORTH_MARKET_FRONT_Z, Math.PI);
+    placeBuilding(createShop({
+      width: 12, depth: 11, plaster: true,
+      paint: 0x62433a, awning: 0xb35b45, roof: 0x4e4641,
+      shutters: true
+    }), -25, NORTH_MARKET_FRONT_Z, Math.PI);
+    placeBuilding(createShop({
+      width: 10, depth: 11, plaster: true,
+      paint: 0x344952, awning: 0xd0d2c4, roof: 0x3d4247,
+      shutters: true
+    }), -11, NORTH_MARKET_FRONT_Z, Math.PI);
+    placeBuilding(createTerrace([
+      { width: 11, plaster: true, roof: 0x594b41, trim: 0x345244, shutters: true },
+      { width: 12, roof: 0x4a4140, trim: 0x744532, shutters: true },
+      { width: 11, plaster: true, roof: 0x3d444a, trim: 0x385247, shutters: true }
+    ], { depth: 10 }), NORTH_MARKET_X, NORTH_MARKET_BACK_Z);
+
+    // --- South front-row cottages: terrace toward the quay, homes behind ----
+    const SOUTH_COTTAGE_X = -75;
+    const SOUTH_COTTAGE_FRONT_Z = -28;
+    const SOUTH_COTTAGE_BACK_Z = -49;
+    placeBuilding(createTerrace([
+      { width: 11, plaster: true, roof: 0x4b4c4f, trim: 0x36504b, shutters: true },
+      { width: 13, roof: 0x694a3b, trim: 0x6e4531, shutters: true },
+      { width: 11, plaster: true, roof: 0x514239, trim: 0x5a3f30, shutters: true }
+    ], { depth: 10.5 }), SOUTH_COTTAGE_X, SOUTH_COTTAGE_FRONT_Z);
+    placeBuilding(createHouse({
+      width: 16, depth: 12, plaster: true,
+      roof: 0x3d454a, trim: 0x365349, shutters: true
+    }), -85, SOUTH_COTTAGE_BACK_Z, Math.PI);
+    placeBuilding(createHouse({
+      width: 16, depth: 12,
+      roof: 0x60463a, trim: 0x754b35, shutters: true
+    }), -65, SOUTH_COTTAGE_BACK_Z, Math.PI);
+
+    // --- North rear farm: the water tower occupies the rear building layer ---
+    placeBuilding(createFarmhouse({
+      width: 15, depth: 8, eave: 4.5, rise: 2.8,
+      plaster: true, roof: 0x5a4b40
+    }), -34, 126, Math.PI);
+    placeBuilding(createWaterTower({
+      legHeight: 15, tankRadius: 3.4, tankHeight: 5.8,
+      color: 0x697871, roof: 0x454741
+    }), -34, 145);
+    placeBuilding(createBarn({
+      width: 12, depth: 16, brick: true, eave: 6.1, rise: 4.1,
+      roof: 0x4c443d, doorWidth: 4.6
+    }), -12, 145);
+    placeBuilding(createWell(), -24, 134);
+
+    // --- South rear farm: longer stone house and low timber barn -------------
+    placeBuilding(createFarmhouse({
+      width: 17, depth: 8, eave: 4.9, rise: 3.0,
+      roof: 0x51463a
+    }), -86, -126);
+    placeBuilding(createBarn({
+      width: 13, depth: 16, eave: 5.7, rise: 3.7,
+      roof: 0x493f36, doorWidth: 4.4
+    }), -62, -145);
+    placeBuilding(createWell(), -75, -134);
+
+    // --- Final map fill: varied rural rear rows ------------------------------
+    // Remaining rear plots stay agricultural, but alternate building sizes,
+    // barn orientation, materials, and roof profiles instead of repeating one
+    // farm layout throughout the map.
+    const RURAL_STYLES = [
+      {
+        house: { width: 15, depth: 8, eave: 4.4, rise: 2.7, plaster: true, roof: 0x5b4c40 },
+        barn: { width: 11, depth: 17, eave: 5.8, rise: 3.8, roof: 0x443f39, doorWidth: 4.0 },
+        houseRotation: Math.PI,
+        barnRotation: Math.PI / 2
+      },
+      {
+        house: { width: 14, depth: 7, eave: 4.8, rise: 3.1, roof: 0x60473a },
+        barn: { width: 12, depth: 18, brick: true, eave: 6.4, rise: 4.3, roof: 0x4b4540, doorWidth: 4.7 },
+        houseRotation: Math.PI / 2,
+        barnRotation: 0
+      },
+      {
+        house: { width: 16, depth: 8.5, eave: 4.6, rise: 2.9, plaster: true, roof: 0x4d4b46 },
+        barn: { width: 13, depth: 15, eave: 5.7, rise: 3.7, roof: 0x504136, doorWidth: 4.5 },
+        houseRotation: 0,
+        barnRotation: -Math.PI / 2
+      },
+      {
+        house: { width: 13, depth: 8, eave: 4.3, rise: 2.6, plaster: true, roof: 0x3f484a },
+        barn: { width: 12, depth: 16, eave: 6.0, rise: 4.0, roof: 0x453e37, doorWidth: 4.2 },
+        houseRotation: -Math.PI / 2,
+        barnRotation: Math.PI
+      },
+      {
+        house: { width: 16, depth: 7.5, eave: 5.0, rise: 3.2, roof: 0x5d483b },
+        barn: { width: 14, depth: 16, brick: true, eave: 6.2, rise: 4.1, roof: 0x4a443e, doorWidth: 5.0 },
+        houseRotation: Math.PI,
+        barnRotation: Math.PI / 2
+      }
+    ];
+
+    function placeVariedRuralBlock(cx, cz, styleIndex) {
+      const style = RURAL_STYLES[styleIndex % RURAL_STYLES.length];
+      const bank = Math.sign(cz);
+      const houseRotation = style.houseRotation ?? (bank > 0 ? Math.PI : 0);
+      const houseX = cx - 9;
+      const houseZ = cz - bank * 13;
+      const barnX = cx + (style.barnRotation ? 10 : 12);
+      const barnZ = cz + bank * 6;
+
+      placeBuilding(createFarmhouse(style.house), houseX, houseZ, houseRotation);
+      placeBuilding(createBarn(style.barn), barnX, barnZ, style.barnRotation);
+      placeBuilding(createWell(), cx, cz - bank * 5);
+    }
+
+    // These are homes in the outer rows, not miniature town-centre blocks:
+    // low, detached cottages and short cottage rows with gardens between them.
+    // Each plot still has just a street-side and a rear building layer.
+    function placeRuralResidentialBlock(cx, cz, variant) {
+      const bank = Math.sign(cz);
+      const streetRotation = bank > 0 ? Math.PI : 0;
+      const rearRotation = streetRotation + Math.PI;
+      const frontZ = cz - bank * 11;
+      const rearZ = cz + bank * 10;
+
+      if (variant % 3 === 0) {
+        placeBuilding(createHouse({
+          width: 14, depth: 10, plaster: true,
+          roof: 0x4a4c4d, trim: 0x3c584f, shutters: true
+        }), cx - 9, frontZ, streetRotation);
+        placeBuilding(createHouse({
+          width: 13, depth: 10,
+          roof: 0x61473a, trim: 0x714631, shutters: true
+        }), cx + 9, rearZ, rearRotation);
+        return;
+      }
+
+      if (variant % 3 === 1) {
+        placeBuilding(createTerrace([
+          { width: 10, plaster: true, roof: 0x4a4d4d, trim: 0x36554d, shutters: true },
+          { width: 11, roof: 0x60463a, trim: 0x704530, shutters: true }
+        ], { depth: 9 }), cx, frontZ, streetRotation);
+        placeBuilding(createHouse({
+          width: 15, depth: 10, plaster: true,
+          roof: 0x51443b, trim: 0x61412f, shutters: true
+        }), cx, rearZ, rearRotation);
+        return;
+      }
+
+      placeBuilding(createHouse({
+        width: 12, depth: 11,
+        roof: 0x684b3d, trim: 0x744932, shutters: true
+      }), cx - 10, frontZ, streetRotation);
+      placeBuilding(createHouse({
+        width: 12, depth: 11, plaster: true,
+        roof: 0x3e474b, trim: 0x34554e, shutters: true
+      }), cx + 10, rearZ, rearRotation);
+    }
+
+    const REMAINING_RURAL_BLOCKS = [
+      [-175, 89, "farm", 0], [-125, 89, "homes", 0], [-75, 89, "farm", 2],
+      [-25, 89, "homes", 1], [25, 89, "farm", 4], [125, 89, "homes", 1],
+      [-175, 139, "homes", 2], [-75, 139, "farm", 0], [125, 139, "homes", 0], [175, 139, "farm", 2],
+      [-175, -89, "farm", 3], [-125, -89, "homes", 1], [-75, -89, "farm", 0],
+      [-25, -89, "homes", 2], [75, -89, "farm", 2], [125, -89, "homes", 0], [175, -89, "farm", 4],
+      [-175, -139, "homes", 1], [-125, -139, "farm", 1], [25, -139, "homes", 2], [175, -139, "farm", 4]
+    ];
+    REMAINING_RURAL_BLOCKS.forEach(([x, z, kind, style]) => {
+      if (kind === "homes") placeRuralResidentialBlock(x, z, style);
+      else placeVariedRuralBlock(x, z, style);
+    });
+
+    // --- Final map fill: varied front-row town blocks ------------------------
+    function placeFrontTownBlock(cx, cz, variant) {
+      const bank = Math.sign(cz);
+      const riverRotation = bank > 0 ? Math.PI : 0;
+      const rearRotation = bank > 0 ? 0 : Math.PI;
+      const frontZ = cz - bank * 11;
+      const rearZ = cz + bank * 10;
+
+      if (variant === 0) {
+        placeBuilding(createHouse({
+          width: 10, depth: 11, plaster: true,
+          roof: 0x454b4e, trim: 0x35564e, shutters: true
+        }), cx - 14, frontZ, riverRotation);
+        placeBuilding(createShop({
+          width: 12, depth: 11, plaster: true,
+          paint: 0x63463a, awning: 0xd3d1c1, roof: 0x46413d, shutters: true
+        }), cx, frontZ, riverRotation);
+        placeBuilding(createHouse({
+          width: 10, depth: 11,
+          roof: 0x5d463a, trim: 0x704631, shutters: true
+        }), cx + 14, frontZ, riverRotation);
+        placeBuilding(createTerrace([
+          { width: 11, plaster: true, roof: 0x3e474b, trim: 0x36564e, shutters: true },
+          { width: 12, roof: 0x60473a, trim: 0x724633, shutters: true },
+          { width: 11, plaster: true, roof: 0x50443d, trim: 0x5f402f, shutters: true }
+        ], { depth: 10 }), cx, rearZ, rearRotation);
+        return;
+      }
+
+      if (variant === 1) {
+        placeBuilding(createTerrace([
+          { width: 11, roof: 0x5d483c, trim: 0x704733, shutters: true },
+          { width: 13, plaster: true, roof: 0x3d484b, trim: 0x35574e, shutters: true },
+          { width: 11, plaster: true, roof: 0x51443c, trim: 0x60412f, shutters: true }
+        ], { depth: 10.5 }), cx, frontZ, riverRotation);
+        placeBuilding(createHouse({
+          width: 16, depth: 12, plaster: true,
+          roof: 0x3f484b, trim: 0x35564d, shutters: true
+        }), cx - 10, rearZ, rearRotation);
+        placeBuilding(createHouse({
+          width: 16, depth: 12,
+          roof: 0x60463a, trim: 0x724734, shutters: true
+        }), cx + 10, rearZ, rearRotation);
+        return;
+      }
+
+      if (variant === 2) {
+        placeBuilding(createShop({
+          width: 10, depth: 11, cafe: true, plaster: true,
+          paint: 0x405149, awning: 0xc5a54e, roof: 0x41464a,
+          terraceDepth: 1.4, tables: 1
+        }), cx - 14, frontZ, riverRotation);
+        placeBuilding(createHouse({
+          width: 12, depth: 11, plaster: true,
+          roof: 0x51463e, trim: 0x3c584e, shutters: true
+        }), cx, frontZ, riverRotation);
+        placeBuilding(createShop({
+          width: 10, depth: 11,
+          paint: 0x664535, awning: 0xc75d46, roof: 0x4b413c, shutters: true
+        }), cx + 14, frontZ, riverRotation);
+        placeBuilding(createTerrace([
+          { width: 11, plaster: true, roof: 0x3d484c, trim: 0x37584f, shutters: true },
+          { width: 12, roof: 0x5e473c, trim: 0x704633, shutters: true },
+          { width: 11, plaster: true, roof: 0x4f443d, trim: 0x5e402f, shutters: true }
+        ], { depth: 10 }), cx, rearZ, rearRotation);
+        return;
+      }
+
+      placeBuilding(createTerrace([
+        { width: 11, plaster: true, roof: 0x464b4e, trim: 0x36564e, shutters: true },
+        { width: 13, roof: 0x62483b, trim: 0x744933, shutters: true },
+        { width: 11, plaster: true, roof: 0x51443c, trim: 0x60412f, shutters: true }
+      ], { depth: 10.5 }), cx, frontZ, riverRotation);
+      placeBuilding(createShop({
+        width: 10, depth: 10, plaster: true,
+        paint: 0x35524f, awning: 0xd8d5c4, roof: 0x3e4549, shutters: true
+      }), cx - 12, rearZ, rearRotation);
+      placeBuilding(createShop({
+        width: 10, depth: 10,
+        paint: 0x684535, awning: 0xb99a4a, roof: 0x4b423c, shutters: true
+      }), cx + 12, rearZ, rearRotation);
+    }
+
+    [
+      [175, 39, 0],
+      [-175, 39, 1],
+      [-175, -39, 1],
+      [-125, -39, 2],
+      [175, -39, 3]
+    ].forEach(([x, z, variant]) => placeFrontTownBlock(x, z, variant));
+
+    // Do this only after all fixed town models have been placed. The flag and
+    // runner are added below and remain independent, animated meshes.
+    batchStaticBuildings();
+
+    // --- Argentine flag at the town-hall entrance ----------------------------
     const POLE_H = 14;
+    const FLAG_X = TOWN_HALL_X;
+    const FLAG_Z = courtyardZ + 2;
     const poleMat = new THREE.MeshPhongMaterial({ color: 0xdedad0, shininess: 60 });
     const flagpole = new THREE.Group();
     const poleBase = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.95, 0.7, 12), stoneMat);
@@ -2825,130 +4787,30 @@
     finial.position.y = 0.7 + POLE_H + 0.16;
     flagpole.add(finial);
     flagpole.traverse((n) => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
-    flagpole.position.set(0, 0, courtyardZ + 2);
+    flagpole.position.set(FLAG_X, 0, FLAG_Z);
     scene.add(flagpole);
+    colliders.push({
+      minX: FLAG_X - 1.0, maxX: FLAG_X + 1.0,
+      minZ: FLAG_Z - 1.0, maxZ: FLAG_Z + 1.0,
+      maxY: POLE_H
+    });
 
     const flag = createFlagCloth();
-    flag.mesh.position.set(0.12, 0.7 + POLE_H - 0.35, courtyardZ + 2);
+    flag.mesh.position.set(FLAG_X + 0.12, 0.7 + POLE_H - 0.35, FLAG_Z);
     scene.add(flag.mesh);
-
-    // --- Barns (enterable) ---------------------------------------------------
-    const BARN_VARIANTS = [
-      { width: 12, depth: 20, eave: 6.2, rise: 4.2, roof: 0x4f463a, doorWidth: 4.4 },
-      { width: 10, depth: 16, eave: 5.6, rise: 3.6, roof: 0x5c4a35, doorWidth: 3.8,
-        doorHeight: 4.0 },
-      { width: 14, depth: 22, eave: 6.8, rise: 4.8, roof: 0x3f3a33, brick: true,
-        doorWidth: 5.2, doorHeight: 5.2 }
-    ];
-    BARN_VARIANTS.forEach((opts, i) => {
-      placeBuilding(createBarn(opts), -95 + i * 30, 60, i === 1 ? Math.PI : 0);
-    });
-
-    // --- Écoles --------------------------------------------------------------
-    const SCHOOL_VARIANTS = [
-      { width: 28, depth: 11, bays: 9, roof: 0x4d4a4e },
-      { width: 24, depth: 10, bays: 7, rise: 2.7, plaster: true, roof: 0x6b4433 },
-      { width: 32, depth: 12, bays: 11, rise: 3.4, roof: 0x565259 }
-    ];
-    SCHOOL_VARIANTS.forEach((opts, i) => {
-      const sc = placeBuilding(createSchool(opts), 95, -40 + i * 40, -Math.PI / 2);
-      // Walled yard in front of each school, gate facing the town.
-      const yardW = opts.width;
-      const yardD = 18;
-      const yz = -40 + i * 40;
-      const fenceA = createFenceRun(yardW, 5);
-      placeBuilding(fenceA, 95 - yardD - 6.5, yz, Math.PI / 2);
-      for (const sd of [-1, 1]) {
-        const run = createFenceRun(yardD + 6.5);
-        placeBuilding(run, 95 - (yardD + 6.5) / 2, yz + (sd * yardW) / 2);
-      }
-      for (let t = 0; t < 4; t++) {
-        const tree = createTree(0.8 + ((t * 29) % 30) / 100);
-        tree.position.set(95 - 8 - t * 4.5, 0, yz + (t % 2 ? 1 : -1) * (yardW / 2 - 3));
-        scene.add(tree);
-      }
-    });
-
-    // --- Water tower ---------------------------------------------------------
-    placeBuilding(createWaterTower({ color: 0x6b7a6f }), 74, 84);
-
-    // --- Farms ---------------------------------------------------------------
-    // House closing the north side of a small walled yard, with a well and
-    // scattered planting. Layout details are jittered by the seeded RNG.
-    function placeFarm(x, z, opts = {}) {
-      const yardW = opts.yardW || 20;
-      const yardD = opts.yardD || 14;
-      placeBuilding(createFarmhouse(opts), x, z, Math.PI);
-
-      const yardZ = z - 4.0 - yardD / 2;
-      placeBuilding(
-        createCourtyardWall(yardW, yardD, { gate: opts.gate || 3.8, height: opts.wallH || 2.0 }),
-        x, yardZ, Math.PI
-      );
-      placeBuilding(createWell(), x + rand(3.5, 6.5) * pick([-1, 1]), yardZ + rand(-1, 3));
-
-      for (let i = 0; i < 5; i++) {
-        const bush = createBush(rand(0.5, 0.95));
-        bush.position.set(x + rand(-yardW / 2 + 1.5, yardW / 2 - 1.5), 0, yardZ + rand(-5, 5));
-        scene.add(bush);
-      }
-      for (let i = 0; i < 5; i++) {
-        const tree = createTree(rand(0.8, 1.35));
-        tree.position.set(
-          x + pick([-1, 1]) * rand(yardW / 2 + 2, yardW / 2 + 9),
-          0,
-          z - rand(0, 26)
-        );
-        tree.rotation.y = rand(0, 6.28);
-        scene.add(tree);
-      }
-    }
-
-    const FARM_VARIANTS = [
-      { width: 16, eave: 4.5, rise: 2.9, roof: 0x6b5340, yardW: 20, yardD: 14 },
-      { width: 13, eave: 4.2, rise: 2.6, roof: 0x7a4a38, plaster: true,
-        yardW: 16, yardD: 12, gate: 3.4, wallH: 1.8 },
-      { width: 19, eave: 4.9, rise: 3.2, roof: 0x565045,
-        yardW: 24, yardD: 16, gate: 4.4, wallH: 2.2 }
-    ];
-    const FARM_SPOTS = [[-62, 96], [-132, 104], [26, 122]];
-    FARM_VARIANTS.forEach((opts, i) => placeFarm(FARM_SPOTS[i][0], FARM_SPOTS[i][1], opts));
-
-    // --- Corner units: ten models for street junctions ------------------------
-    const CORNER_VARIANTS = [
-      { width: 10, depth: 10, chamfer: 3.0, storeys: 2, shopfront: true,
-        paint: 0x2f4a35, roof: 0x4d4a4e, lamp: true },
-      { width: 11, depth: 9, chamfer: 2.6, storeys: 3, plaster: true,
-        parapet: true, roof: 0x3f3d42 },
-      { width: 9, depth: 11, chamfer: 3.4, storeys: 2, shopfront: true,
-        paint: 0x5d2b2b, roof: 0x6b4433, rise: 2.7 },
-      { width: 12, depth: 10, chamfer: 3.8, storeys: 3, shopfront: true,
-        paint: 0x2b3f63, roof: 0x565259, lamp: true },
-      { width: 10, depth: 12, chamfer: 3.0, storeys: 2, plaster: true,
-        roof: 0x7a4a38, rise: 2.9 },
-      { width: 9, depth: 9, chamfer: 2.4, storeys: 2, shopfront: true,
-        paint: 0x8a6a24, plaster: true, roof: 0x4f463a },
-      { width: 13, depth: 11, chamfer: 4.2, storeys: 3, parapet: true,
-        roof: 0x44424a, lamp: true },
-      { width: 10, depth: 10, chamfer: 3.2, storeys: 3, plaster: true,
-        shopfront: true, paint: 0x7a2f2f, roof: 0x59453d },
-      { width: 11, depth: 12, chamfer: 3.6, storeys: 2, roof: 0x4a5a4e, rise: 3.1 },
-      { width: 12, depth: 9, chamfer: 2.8, storeys: 3, plaster: true,
-        parapet: true, roof: 0x3a3a3e, lamp: true }
-    ];
-    CORNER_VARIANTS.forEach((opts, i) => {
-      placeBuilding(createCornerUnit(opts), -85 + i * 19, -70, -Math.PI / 4);
-    });
 
     const runner = createUnit(0xd4956a);
     runner.scale.setScalar(UNIT_SCALE);
-    runner.position.set(0, UNIT_Y_OFFSET, 0);
-    runner.rotation.y = 0;
+    runner.position.set(-18, UNIT_Y_OFFSET, 190);
+    runner.rotation.y = Math.PI;
     scene.add(runner);
+
+    starField = createStarField();
+    scene.add(starField);
 
     const keys = new Set();
     const state = {
-      heading: 0,
+      heading: Math.PI,
       speed: 0,
       targetSpeed: 0,
       stamina: SPRINT_SECONDS,
@@ -2958,7 +4820,9 @@
       crouch: 0,      // 0..1, smoothed
       climbing: null, // the ladder being climbed, or null
       climbY: 0,
-      climbPhase: 0
+      climbPhase: 0,
+      swimming: false,
+      swimPhase: 0
     };
     const CROUCH_SPEED = 1.25;
     // Leg segment lengths in unit space, used to keep the feet on the ground
@@ -2968,6 +4832,48 @@
     const CROUCH_THIGH = 1.2;  // radians the thigh swings forward
     const CROUCH_KNEE = 2.4;   // radians of knee flex on top of that
     const CLIMB_SPEED = 1.9;
+    const SWIM_SPEED = 1.15;
+    const SWIM_TURN = 1.6;          // rad/s — easier to spin round in water
+    const FLOAT_Y = WATER_Y - 1.12; // feet hang below the surface, head clear
+    const SOLDIER_RADIUS = 0.42;
+    const SOLDIER_EYE_Y = 1.35;
+    const SOLDIER_HEALTH = 100;
+    const SOLDIER_DAMAGE = 34;
+    const AI_FIRE_RANGE = 78;
+    const AI_BASE_AIM_SPREAD = 0.09;
+    const AI_MOVING_AIM_SPREAD = 0.08;
+    const AI_WOUNDED_AIM_SPREAD = 0.07;
+    const PLAYER_HUNT_RANGE = 150;
+    const PLAYER_GRACE_SECONDS = 10;
+    const AI_VIEW_RANGE = 72;
+    const LANDMARK_CAPTURE_SECONDS = 30;
+    const LANDMARK_HALF_W = 28;
+    const LANDMARK_HALF_D = 24;
+    const AI_FIRE_INTERVAL = 1.15;
+    const AI_MOVE_SPEED = 2.55;
+    const AI_INDEPENDENT_RANGE = 20;
+
+    const actors = [];
+    const squads = [];
+    let playerActor = null;
+    let squadOrderMode = "formation";
+    let squadAutoBrokeFromFire = false;
+    let damageFlash = 0;
+    let elapsedGameSeconds = 0;
+    let victoryMessage = "";
+    const landmarkAlerts = { ally: 0, enemy: 0 };
+    const captureProgress = { ally: 0, enemy: 0 };
+    const orderPoint = new THREE.Vector3(0, 0, 12);
+    const _orderDir = new THREE.Vector3();
+
+    // True inside the channel itself, but not where the bridge deck covers it.
+    function inCanal(x, z) {
+      if (z < CANAL_Z - CANAL_W / 2 || z > CANAL_Z + CANAL_W / 2) return false;
+      for (const bx of BRIDGE_XS) {
+        if (x > bx - BRIDGE_W / 2 && x < bx + BRIDGE_W / 2) return false;
+      }
+      return true;
+    }
 
     // --- Orbit camera -------------------------------------------------
     const MIN_PITCH = -0.25;
@@ -2997,6 +4903,311 @@
       if (d > Math.PI) d -= Math.PI * 2;
       if (d < -Math.PI) d += Math.PI * 2;
       return d;
+    }
+
+    function makeActor(unit, team, role, squad = null, commandable = false) {
+      const actor = {
+        unit,
+        team,
+        role,
+        squad,
+        commandable,
+        health: SOLDIER_HEALTH,
+        alive: true,
+        state: {
+          heading: unit.rotation.y,
+          speed: 0,
+          stride: rand(0, 1),
+          crouch: 0,
+          baseY: 0,
+          climbing: null,
+          climbY: 0,
+          climbPhase: 0
+        },
+        fireCooldown: rand(0.1, AI_FIRE_INTERVAL),
+        thinkTimer: rand(0, 0.6),
+        avoidTimer: 0,
+        avoidSide: pick([-1, 1]),
+        avoidTarget: new THREE.Vector3(),
+        retreatTimer: 0,
+        coverTarget: new THREE.Vector3(),
+        wanderAngle: unit.rotation.y,
+        target: null
+      };
+      actors.push(actor);
+      createHealthBar(actor);
+      return actor;
+    }
+
+    function createHealthBar(actor) {
+      const canvas = document.createElement("canvas");
+      canvas.width = 96;
+      canvas.height = 18;
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+      const sprite = new THREE.Sprite(material);
+      sprite.position.set(0, 2.25, 0);
+      sprite.scale.set(1.6, 0.3, 1);
+      actor.unit.add(sprite);
+      actor.healthBar = { canvas, ctx: canvas.getContext("2d"), texture, sprite };
+      updateHealthBar(actor);
+    }
+
+    function updateHealthBar(actor) {
+      if (!actor.healthBar) return;
+      const { canvas, ctx, texture, sprite } = actor.healthBar;
+      const pct = THREE.MathUtils.clamp(actor.health / SOLDIER_HEALTH, 0, 1);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "rgba(8, 10, 12, 0.72)";
+      ctx.fillRect(1, 3, canvas.width - 2, 12);
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.76)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(1, 3, canvas.width - 2, 12);
+      ctx.fillStyle = pct > 0.55 ? "#6ee7a8" : pct > 0.25 ? "#ffd166" : "#ff6b7a";
+      ctx.fillRect(4, 6, Math.max(0, (canvas.width - 8) * pct), 6);
+      texture.needsUpdate = true;
+      sprite.visible = actor.alive;
+    }
+
+    function placeSoldier(x, z, color, team, role, squad = null, commandable = false) {
+      const unit = createUnit(color);
+      unit.scale.setScalar(UNIT_SCALE);
+      unit.position.set(x, UNIT_Y_OFFSET, z);
+      unit.rotation.y = role === "enemy" ? Math.PI : 0;
+      scene.add(unit);
+      return makeActor(unit, team, role, squad, commandable);
+    }
+
+    function createSquad(team, x, z, color, commandable = false, enemy = false, strategy = "attack") {
+      const squad = {
+        team,
+        commandable,
+        order: commandable ? "formation" : "independent",
+        strategy,
+        commander: null,
+        members: [],
+        anchor: new THREE.Vector3(x, 0, z),
+        targetPoint: new THREE.Vector3(x, 0, z),
+        patrolAngle: enemy ? Math.PI : 0
+      };
+      squads.push(squad);
+
+      const commander = placeSoldier(x, z, color, team, enemy ? "enemy" : "commander", squad, commandable);
+      commander.huntsPlayer = enemy;
+      squad.commander = commander;
+      squad.members.push(commander);
+
+      const offsets = [[-2.1, 2.1], [2.1, 2.1], [-3.8, 4.2], [3.8, 4.2]];
+      offsets.forEach(([ox, oz]) => {
+        squad.members.push(placeSoldier(x + ox, z + oz, color, team, enemy ? "enemy" : "soldier", squad, commandable));
+      });
+      return squad;
+    }
+
+    playerActor = makeActor(runner, "player", "player", null, true);
+    playerActor.state = state;
+    const playerSquad = {
+      team: "player",
+      commandable: true,
+      order: "formation",
+      commander: playerActor,
+      members: [playerActor],
+      anchor: new THREE.Vector3(),
+      targetPoint: orderPoint.clone(),
+      patrolAngle: 0
+    };
+    squads.push(playerSquad);
+
+    [[-2.0, -2.8], [2.0, -2.8], [-3.8, -5.1], [3.8, -5.1]].forEach(([x, z]) => {
+      playerSquad.members.push(placeSoldier(runner.position.x + x, runner.position.z + z, 0x6aa4d4, "player", "soldier", playerSquad, true));
+    });
+
+    [
+      [-56, 190, "landmarkDefense"], [8, 190, "landmarkDefense"], [58, 184, "riverDefense"], [104, 188, "attack"]
+    ].forEach(([x, z, strategy], i) => {
+      createSquad(`ally-${i}`, x, z, 0x7bc87c, false, false, strategy);
+    });
+
+    [
+      [-74, -190, "landmarkDefense"], [-20, -190, "landmarkDefense"], [34, -184, "riverDefense"], [88, -190, "attack"], [136, -184, "attack"]
+    ].forEach(([x, z, strategy], i) => {
+      createSquad(`enemy-${i}`, x, z, 0xc95757, false, true, strategy);
+    });
+
+    function sideOf(actor) {
+      return actor.team.startsWith("enemy") ? "enemy" : "ally";
+    }
+
+    function landmarkForSide(side) {
+      return side === "enemy"
+        ? { x: TOWN_HALL_X, z: TOWN_HALL_Z, name: "Town Hall" }
+        : { x: CHURCH_X, z: CHURCH_Z, name: "Church" };
+    }
+
+    function attackLandmarkForSide(side) {
+      return side === "enemy" ? landmarkForSide("ally") : landmarkForSide("enemy");
+    }
+
+    function inLandmarkBounds(actor, landmark) {
+      return Math.abs(actor.unit.position.x - landmark.x) <= LANDMARK_HALF_W
+        && Math.abs(actor.unit.position.z - landmark.z) <= LANDMARK_HALF_D;
+    }
+
+    function anySideInLandmark(side, landmark) {
+      return actors.some((actor) => actor.alive && sideOf(actor) === side && inLandmarkBounds(actor, landmark));
+    }
+
+    function sameSide(a, b) {
+      return a && b && sideOf(a) === sideOf(b);
+    }
+
+    function aliveEnemiesOf(actor) {
+      return actors.filter((other) => other.alive && !sameSide(actor, other));
+    }
+
+    function nearestEnemy(actor, maxRange = AI_FIRE_RANGE) {
+      if (actor.huntsPlayer && playerActor?.alive && elapsedGameSeconds >= PLAYER_GRACE_SECONDS) {
+        const playerDist = actor.unit.position.distanceTo(playerActor.unit.position);
+        if (playerDist < PLAYER_HUNT_RANGE && hasLineOfSight(actor, playerActor)) return playerActor;
+      }
+      let best = null;
+      let bestD = maxRange;
+      for (const other of aliveEnemiesOf(actor)) {
+        const d = actor.unit.position.distanceTo(other.unit.position);
+        if (d < bestD && hasLineOfSight(actor, other)) {
+          best = other;
+          bestD = d;
+        }
+      }
+      return best;
+    }
+
+    function hasLineOfSight(a, b) {
+      const ax = a.unit.position.x;
+      const ay = a.unit.position.y + SOLDIER_EYE_Y;
+      const az = a.unit.position.z;
+      const bx = b.unit.position.x;
+      const by = b.unit.position.y + SOLDIER_EYE_Y;
+      const bz = b.unit.position.z;
+      const dx = bx - ax;
+      const dy = by - ay;
+      const dz = bz - az;
+      const dist = Math.hypot(dx, dy, dz);
+      if (dist < 0.001) return true;
+      return segmentHit(ax, ay, az, dx / dist, dy / dist, dz / dist, dist) < 0;
+    }
+
+    function movementBlocked(unit, heading, distance) {
+      return segmentHit(
+        unit.position.x,
+        unit.position.y + 0.55,
+        unit.position.z,
+        Math.sin(heading),
+        0,
+        Math.cos(heading),
+        distance + SOLDIER_RADIUS + 0.35
+      ) >= 0;
+    }
+
+    function chooseCover(actor, threat = null) {
+      let best = null;
+      let bestD = Infinity;
+      for (const wall of minimapSandbagWalls) {
+        const d = Math.hypot(actor.unit.position.x - wall.x, actor.unit.position.z - wall.z);
+        if (d < bestD) {
+          best = wall;
+          bestD = d;
+        }
+      }
+      if (best) {
+        actor.coverTarget.set(best.x, 0, best.z);
+        return actor.coverTarget;
+      }
+      const away = threat
+        ? Math.atan2(actor.unit.position.x - threat.unit.position.x, actor.unit.position.z - threat.unit.position.z)
+        : actor.state.heading + Math.PI;
+      actor.coverTarget.set(
+        THREE.MathUtils.clamp(actor.unit.position.x + Math.sin(away) * 16, -225, 225),
+        0,
+        THREE.MathUtils.clamp(actor.unit.position.z + Math.cos(away) * 16, -225, 225)
+      );
+      return actor.coverTarget;
+    }
+
+    function resolveCollisionsFor(unit) {
+      const p = unit.position;
+      const r = PLAYER_RADIUS;
+      for (const c of colliders) {
+        if (p.x + r < c.minX || p.x - r > c.maxX || p.z + r < c.minZ || p.z - r > c.maxZ) continue;
+        const dLeft = p.x + r - c.minX;
+        const dRight = c.maxX - (p.x - r);
+        const dNear = p.z + r - c.minZ;
+        const dFar = c.maxZ - (p.z - r);
+        const m = Math.min(dLeft, dRight, dNear, dFar);
+        if (m === dLeft) p.x -= dLeft;
+        else if (m === dRight) p.x += dRight;
+        else if (m === dNear) p.z -= dNear;
+        else p.z += dFar;
+      }
+    }
+
+    function commandSquad(mode) {
+      squadOrderMode = mode;
+      playerSquad.order = mode;
+      squadAutoBrokeFromFire = false;
+      if (mode === "meet") {
+        camera.getWorldDirection(_orderDir);
+        const flatLen = Math.hypot(_orderDir.x, _orderDir.z) || 1;
+        orderPoint.set(
+          runner.position.x + (_orderDir.x / flatLen) * 24,
+          0,
+          runner.position.z + (_orderDir.z / flatLen) * 24
+        );
+        orderPoint.x = THREE.MathUtils.clamp(orderPoint.x, -210, 210);
+        orderPoint.z = THREE.MathUtils.clamp(orderPoint.z, -210, 210);
+      }
+      playerSquad.targetPoint.copy(orderPoint);
+    }
+
+    function reactToEnemyFire(shooter, target) {
+      if (!shooter || !target || !shooter.team.startsWith("enemy")) return;
+      if (target.squad !== playerSquad || squadAutoBrokeFromFire) return;
+      squadAutoBrokeFromFire = true;
+      squadOrderMode = "auto-break";
+      playerSquad.order = "break";
+      playerSquad.members.forEach((member, i) => {
+        if (!member.alive || member === playerActor) return;
+        const away = Math.atan2(
+          member.unit.position.x - shooter.unit.position.x,
+          member.unit.position.z - shooter.unit.position.z
+        );
+        member.wanderAngle = away + (i - 2) * 0.55;
+      });
+    }
+
+    function squadSlotPoint(actor, index, target) {
+      const squad = actor.squad;
+      const leader = squad.commander.unit;
+      const heading = squad.commandable && squad.order === "formation" ? state.heading : squad.patrolAngle;
+      const row = Math.floor((index - 1) / 2);
+      const side = index % 2 === 1 ? -1 : 1;
+      const spacingX = 2.4;
+      const spacingZ = 2.6;
+      if (squad.commandable && squad.order === "meet") {
+        const col = (index - 1) % 2;
+        target.set(squad.targetPoint.x + (col ? 1 : -1) * spacingX, 0, squad.targetPoint.z + row * spacingZ);
+        return target;
+      }
+      if (squad.commandable && squad.order === "break") {
+        const angle = actor.wanderAngle + index * 0.75;
+        target.set(runner.position.x + Math.sin(angle) * AI_INDEPENDENT_RANGE, 0, runner.position.z + Math.cos(angle) * AI_INDEPENDENT_RANGE);
+        return target;
+      }
+      target.set(side * spacingX, 0, 2.7 + row * spacingZ);
+      target.applyAxisAngle(new THREE.Vector3(0, 1, 0), heading);
+      target.add(leader.position);
+      return target;
     }
 
     const canvas = renderer.domElement;
@@ -3076,8 +5287,25 @@
       if (k === " " || k === "spacebar") {
         event.preventDefault();
         fire();
+      } else if (k === "]") {
+        timeSpeedIndex = Math.min(TIME_SPEEDS.length - 1, timeSpeedIndex + 1);
+        event.preventDefault();
+      } else if (k === "[") {
+        timeSpeedIndex = Math.max(0, timeSpeedIndex - 1);
+        event.preventDefault();
       } else if (k === "e") {
-        if (state.climbing) {
+        if (state.swimming) {
+          // Haul out over whichever quay wall you are closest to.
+          const nearNorth =
+            Math.abs(runner.position.z - (CANAL_Z + CANAL_W / 2)) <
+            Math.abs(runner.position.z - (CANAL_Z - CANAL_W / 2));
+          const edge = nearNorth ? CANAL_Z + CANAL_W / 2 : CANAL_Z - CANAL_W / 2;
+          if (Math.abs(runner.position.z - edge) < 2.6) {
+            state.swimming = false;
+            state.baseY = 0;
+            runner.position.z = edge + (nearNorth ? 3.0 : -3.0);
+          }
+        } else if (state.climbing) {
           state.climbing = null;              // step off wherever you are
         } else {
           for (const lad of ladders) {
@@ -3103,12 +5331,18 @@
         orbit.targetYaw = state.heading + Math.PI; // snap behind the runner
       } else if (k === "f") {
         orbit.follow = !orbit.follow;
+      } else if (k === "z") {
+        commandSquad("formation");
+      } else if (k === "x") {
+        commandSquad("meet");
+      } else if (k === "b") {
+        commandSquad("break");
       }
     });
 
     window.addEventListener("keydown", (event) => {
       keys.add(event.key.toLowerCase());
-      if (["w", "a", "s", "d", "shift", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(event.key.toLowerCase())) event.preventDefault();
+      if (["w", "a", "s", "d", "shift", "arrowup", "arrowdown", "arrowleft", "arrowright", "z", "x", "b"].includes(event.key.toLowerCase())) event.preventDefault();
     });
     window.addEventListener("keyup", (event) => keys.delete(event.key.toLowerCase()));
     window.addEventListener("resize", () => {
@@ -3129,6 +5363,25 @@
       // On a ladder the normal gait is bypassed entirely — and crucially the
       // height comes from climbY, not from the walking code below, which used
       // to slam the runner back down to ground level every frame.
+      if (state.swimming) {
+        // Treading water: upright, chest-deep, arms sculling and legs kicking.
+        const t = state.swimPhase;
+        runner.position.y = state.baseY + UNIT_Y_OFFSET + Math.sin(t * 1.3) * 0.07;
+        ud.torsoGroup.rotation.x = 0.16 + Math.sin(t * 1.3) * 0.04;
+        // Left arm sculls; the right holds the rifle in exactly the grip it uses
+        // on land, so the weapon never leaves his hand. He is submerged to the
+        // neck here, so the rifle rides at the surface rather than above it.
+        ud.leftArm.rotation.set(-1.15 + Math.sin(t) * 0.75, 0.5, -0.55);
+        ud.leftElbow.rotation.set(-0.95 - Math.sin(t) * 0.25, 0, 0.3);
+        ud.rightArm.rotation.set(-1.50 + Math.sin(t * 1.3) * 0.06, -0.18, -0.0354);
+        ud.rightElbow.rotation.set(-0.35, 0, -0.605);
+        ud.leftLeg.rotation.x = -0.5 + Math.sin(t * 1.6) * 0.5;
+        ud.rightLeg.rotation.x = -0.5 - Math.sin(t * 1.6) * 0.5;
+        ud.leftKnee.rotation.x = 0.7 + Math.sin(t * 1.6 + 1) * 0.35;
+        ud.rightKnee.rotation.x = 0.7 - Math.sin(t * 1.6 + 1) * 0.35;
+        return;
+      }
+
       if (state.climbing) {
         runner.position.y = state.climbY;
         const ph = state.climbPhase;
@@ -3195,9 +5448,249 @@
       runner.position.y = state.baseY + UNIT_Y_OFFSET + bounce - legDrop;
     }
 
+    const _aiTargetPoint = new THREE.Vector3();
+    const _aiMove = new THREE.Vector3();
+
+    function animateActor(actor, dt) {
+      if (actor === playerActor) {
+        animateRunner(dt);
+        return;
+      }
+      const unit = actor.unit;
+      const simState = actor.state;
+      const ud = unit.userData;
+      if (!actor.alive) {
+        simState.speed = 0;
+        unit.position.y = UNIT_Y_OFFSET;
+        unit.rotation.z = THREE.MathUtils.lerp(unit.rotation.z, Math.PI / 2, 1 - Math.pow(0.001, dt));
+        return;
+      }
+
+      const moving = Math.abs(simState.speed) > 0.08;
+      simState.stride += dt * (moving ? 1.15 : 0);
+      const phase = simState.stride * Math.PI * 2;
+      const swing = Math.sin(phase);
+      const oppose = Math.sin(phase + Math.PI);
+      const lift = Math.max(0, Math.sin(phase));
+      const backLift = Math.max(0, Math.sin(phase + Math.PI));
+      ud.torsoGroup.rotation.x = moving ? 0.08 : 0;
+      ud.torsoGroup.rotation.z = swing * 0.025;
+      ud.leftLeg.rotation.x = -swing * 0.55;
+      ud.rightLeg.rotation.x = -oppose * 0.55;
+      ud.leftKnee.rotation.x = 0.15 + backLift * 0.65;
+      ud.rightKnee.rotation.x = 0.15 + lift * 0.65;
+      ud.leftArm.rotation.set(-1.08, 0.18, -0.20);
+      ud.rightArm.rotation.set(-1.50, -0.18, -0.0354);
+      ud.leftElbow.rotation.set(-1.55, 0, 0.86);
+      ud.rightElbow.rotation.set(-0.35, 0, -0.605);
+      ud.rightHand.getWorldPosition(_handPos);
+      ud.torsoGroup.worldToLocal(_handPos);
+      _gripOffset.copy(RIFLE_GRIP_OFFSET).applyEuler(ud.rifle.rotation);
+      ud.rifle.position.copy(_handPos).sub(_gripOffset);
+      unit.position.y = UNIT_Y_OFFSET + (moving ? Math.abs(Math.sin(phase)) * 0.04 : 0);
+      unit.rotation.y = simState.heading;
+    }
+
+    function updateActorMovement(actor, target, dt) {
+      const unit = actor.unit;
+      const simState = actor.state;
+      actor.avoidTimer = Math.max(0, actor.avoidTimer - dt);
+      let moveTarget = target;
+      if (actor.avoidTimer > 0) moveTarget = actor.avoidTarget;
+      const dx = moveTarget.x - unit.position.x;
+      const dz = moveTarget.z - unit.position.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > 0.75) {
+        const desired = Math.atan2(dx, dz);
+        simState.heading += shortestAngle(simState.heading, desired) * (1 - Math.pow(0.0008, dt));
+        simState.speed = THREE.MathUtils.lerp(simState.speed, AI_MOVE_SPEED, 1 - Math.pow(0.0006, dt));
+        if (movementBlocked(unit, simState.heading, Math.max(0.5, simState.speed * dt))) {
+          actor.avoidSide *= -1;
+          const sideHeading = simState.heading + actor.avoidSide * Math.PI / 2;
+          actor.avoidTarget.set(
+            THREE.MathUtils.clamp(unit.position.x + Math.sin(sideHeading) * 7 + Math.sin(simState.heading) * 2, -225, 225),
+            0,
+            THREE.MathUtils.clamp(unit.position.z + Math.cos(sideHeading) * 7 + Math.cos(simState.heading) * 2, -225, 225)
+          );
+          actor.avoidTimer = 1.2;
+          simState.heading = sideHeading;
+        }
+        _aiMove.set(Math.sin(simState.heading), 0, Math.cos(simState.heading)).multiplyScalar(simState.speed * dt);
+        unit.position.add(_aiMove);
+        unit.position.x = THREE.MathUtils.clamp(unit.position.x, -225, 225);
+        unit.position.z = THREE.MathUtils.clamp(unit.position.z, -225, 225);
+        resolveCollisionsFor(unit);
+      } else {
+        simState.speed = THREE.MathUtils.lerp(simState.speed, 0, 1 - Math.pow(0.0006, dt));
+      }
+    }
+
+    function strategicTargetForSquad(squad, target) {
+      const side = sideOf(squad.commander);
+      const own = landmarkForSide(side);
+      const attack = attackLandmarkForSide(side);
+      if (landmarkAlerts[side] > 0 && squad.strategy !== "riverDefense") {
+        target.set(own.x, 0, own.z);
+        return target;
+      }
+      if (squad.strategy === "landmarkDefense") {
+        const angle = squad.members.indexOf(squad.commander) * 0.7 + elapsedGameSeconds * 0.05;
+        target.set(own.x + Math.sin(angle) * 18, 0, own.z + Math.cos(angle) * 14);
+        return target;
+      }
+      if (squad.strategy === "riverDefense") {
+        const bx = BRIDGE_XS[squad.team.endsWith("2") ? 1 : 0] || BRIDGE_XS[0];
+        const bankZ = side === "enemy" ? CANAL_Z - CANAL_W / 2 - 8 : CANAL_Z + CANAL_W / 2 + 8;
+        target.set(bx, 0, bankZ);
+        return target;
+      }
+      target.set(attack.x, 0, attack.z);
+      return target;
+    }
+
+    function updateLandmarkState(dt) {
+      landmarkAlerts.ally = Math.max(0, landmarkAlerts.ally - dt);
+      landmarkAlerts.enemy = Math.max(0, landmarkAlerts.enemy - dt);
+      const allyLandmark = landmarkForSide("ally");
+      const enemyLandmark = landmarkForSide("enemy");
+      if (anySideInLandmark("enemy", allyLandmark)) landmarkAlerts.ally = 8;
+      if (anySideInLandmark("ally", enemyLandmark)) landmarkAlerts.enemy = 8;
+
+      const allyCapturingTownHall = anySideInLandmark("ally", enemyLandmark) && !anySideInLandmark("enemy", enemyLandmark);
+      const enemyCapturingChurch = anySideInLandmark("enemy", allyLandmark) && !anySideInLandmark("ally", allyLandmark);
+      captureProgress.ally = allyCapturingTownHall ? Math.min(LANDMARK_CAPTURE_SECONDS, captureProgress.ally + dt) : 0;
+      captureProgress.enemy = enemyCapturingChurch ? Math.min(LANDMARK_CAPTURE_SECONDS, captureProgress.enemy + dt) : 0;
+
+      const allyAlive = actors.some((actor) => actor.alive && sideOf(actor) === "ally");
+      const enemyAlive = actors.some((actor) => actor.alive && sideOf(actor) === "enemy");
+      const allAlliesAcross = actors.filter((actor) => actor.alive && sideOf(actor) === "ally").every((actor) => actor.unit.position.z < CANAL_Z - CANAL_W / 2);
+      const noEnemiesOnAllySide = actors.filter((actor) => actor.alive && sideOf(actor) === "enemy").every((actor) => actor.unit.position.z < CANAL_Z + CANAL_W / 2);
+      const allEnemiesAcross = actors.filter((actor) => actor.alive && sideOf(actor) === "enemy").every((actor) => actor.unit.position.z > CANAL_Z + CANAL_W / 2);
+      const noAlliesOnEnemySide = actors.filter((actor) => actor.alive && sideOf(actor) === "ally").every((actor) => actor.unit.position.z > CANAL_Z - CANAL_W / 2);
+      if (!victoryMessage && captureProgress.ally >= LANDMARK_CAPTURE_SECONDS) victoryMessage = "Victory: Town Hall secured";
+      if (!victoryMessage && captureProgress.enemy >= LANDMARK_CAPTURE_SECONDS) victoryMessage = "Defeat: Church captured";
+      if (!victoryMessage && allyAlive && allAlliesAcross && noEnemiesOnAllySide) victoryMessage = "Victory: allied force crossed over";
+      if (!victoryMessage && enemyAlive && allEnemiesAcross && noAlliesOnEnemySide) victoryMessage = "Defeat: enemy force crossed over";
+      if (!victoryMessage && allyAlive && !enemyAlive) victoryMessage = "Victory: enemy force eliminated";
+      if (!victoryMessage && enemyAlive && !allyAlive) victoryMessage = "Defeat: allied force eliminated";
+    }
+
+    function updateActors(dt) {
+      updateLandmarkState(dt);
+      for (const squad of squads) {
+        if (squad.commander && squad.commander.alive && !squad.commandable) {
+          squad.commander.thinkTimer -= dt;
+          if (squad.commander.thinkTimer <= 0) {
+            squad.commander.thinkTimer = rand(1.0, 2.4);
+            strategicTargetForSquad(squad, squad.targetPoint);
+          }
+        }
+      }
+
+      for (const actor of actors) {
+        if (actor === playerActor) continue;
+        if (!actor.alive) {
+          animateActor(actor, dt);
+          continue;
+        }
+        actor.retreatTimer = Math.max(0, actor.retreatTimer - dt);
+        const enemy = nearestEnemy(actor);
+        if (actor.retreatTimer > 0) {
+          updateActorMovement(actor, chooseCover(actor, enemy), dt);
+        } else if (enemy) {
+          const dx = enemy.unit.position.x - actor.unit.position.x;
+          const dz = enemy.unit.position.z - actor.unit.position.z;
+          const distToEnemy = actor.unit.position.distanceTo(enemy.unit.position);
+          const canSeeEnemy = hasLineOfSight(actor, enemy);
+          actor.state.heading = Math.atan2(dx, dz);
+          if (distToEnemy > 20 || !canSeeEnemy) {
+            _aiTargetPoint.copy(enemy.unit.position);
+            updateActorMovement(actor, _aiTargetPoint, dt);
+          } else {
+            actor.state.speed = THREE.MathUtils.lerp(actor.state.speed, 0, 1 - Math.pow(0.0006, dt));
+          }
+          actor.fireCooldown -= dt;
+          if (canSeeEnemy && actor.fireCooldown <= 0) {
+            actor.fireCooldown = AI_FIRE_INTERVAL + rand(-0.25, 0.4);
+            fireFromActor(actor, enemy);
+          }
+        } else if (actor.squad) {
+          const index = Math.max(1, actor.squad.members.indexOf(actor));
+          if (actor === actor.squad.commander && !actor.squad.commandable) {
+            strategicTargetForSquad(actor.squad, _aiTargetPoint);
+          } else {
+            squadSlotPoint(actor, index, _aiTargetPoint);
+          }
+          updateActorMovement(actor, _aiTargetPoint, dt);
+        }
+        animateActor(actor, dt);
+      }
+    }
+
+    function updateCombatUi(dt) {
+      damageFlash = Math.max(0, damageFlash - dt);
+      const flashEl = document.getElementById("damageFlash");
+      if (flashEl) flashEl.style.opacity = Math.min(0.32, damageFlash * 0.75).toFixed(3);
+      for (const actor of actors) {
+        if (!actor.healthBar) continue;
+        const dist = actor.unit.position.distanceTo(camera.position);
+        actor.healthBar.sprite.visible = actor.alive && dist < 120;
+        const scale = THREE.MathUtils.clamp(dist / 35, 0.75, 1.45);
+        actor.healthBar.sprite.scale.set(1.6 * scale, 0.3 * scale, 1);
+      }
+    }
+
     function update(dt) {
+      advanceGameTime(dt);
+      elapsedGameSeconds += dt;
       const forward = (keys.has("w") || keys.has("arrowup")) ? 1 : (keys.has("s") || keys.has("arrowdown")) ? -1 : 0;
       const turning = ((keys.has("a") || keys.has("arrowleft")) ? 1 : 0) - ((keys.has("d") || keys.has("arrowright")) ? 1 : 0);
+      if (!playerActor.alive) {
+        state.speed = 0;
+        runner.rotation.z = THREE.MathUtils.lerp(runner.rotation.z, Math.PI / 2, 1 - Math.pow(0.001, dt));
+        updateActors(dt);
+        waterTime += dt;
+        updateWater(waterTime);
+        drawMinimap();
+        updateSun();
+        updateFlag(flag, dt);
+        updateBullets(dt);
+        updateCamera(dt);
+        updateHud(false);
+        return;
+      }
+      // --- Swimming ---
+      if (state.swimming) {
+        state.heading -= turning * SWIM_TURN * dt;
+        const drive = forward * SWIM_SPEED;
+        state.speed = THREE.MathUtils.lerp(state.speed, drive, 1 - Math.pow(0.02, dt));
+        runner.position.x += Math.sin(state.heading) * state.speed * dt;
+        runner.position.z += Math.cos(state.heading) * state.speed * dt;
+        state.swimPhase += dt * (2.2 + Math.abs(state.speed));
+        state.crouch = 0;
+
+        // Bounded by the quay walls; you have to climb out with E.
+        runner.position.z = THREE.MathUtils.clamp(
+          runner.position.z,
+          CANAL_Z - CANAL_W / 2 + 0.5,
+          CANAL_Z + CANAL_W / 2 - 0.5
+        );
+        runner.position.x = THREE.MathUtils.clamp(runner.position.x, -GROUND_HALF, GROUND_HALF);
+
+        runner.rotation.y = state.heading;
+        animateRunner(dt);
+        updateActors(dt);
+        waterTime += dt;
+        updateWater(waterTime);
+        drawMinimap();
+        updateSun();
+        updateFlag(flag, dt);
+        updateBullets(dt);
+        updateCamera(dt);
+        updateHud(false);
+        return;
+      }
+
       // --- Climbing takes over movement entirely ---
       if (state.climbing) {
         const lad = state.climbing;
@@ -3227,6 +5720,8 @@
         runner.position.y = state.climbY;
         runner.rotation.y = state.heading;
         animateRunner(dt);
+        updateActors(dt);
+        drawMinimap();
         updateSun();
         updateFlag(flag, dt);
         updateBullets(dt);
@@ -3256,8 +5751,8 @@
 
       const movement = new THREE.Vector3(Math.sin(state.heading), 0, Math.cos(state.heading)).multiplyScalar(state.speed * dt);
       runner.position.add(movement);
-      runner.position.x = THREE.MathUtils.clamp(runner.position.x, -165, 165);
-      runner.position.z = THREE.MathUtils.clamp(runner.position.z, -165, 165);
+      runner.position.x = THREE.MathUtils.clamp(runner.position.x, -225, 225);
+      runner.position.z = THREE.MathUtils.clamp(runner.position.z, -225, 225);
       if (state.baseY > 0.5) {
         // On a platform: stay on the walkable ring rather than walking into the
         // tank or off the edge.
@@ -3276,10 +5771,20 @@
         }
       } else {
         resolveCollisions();
+        if (inCanal(runner.position.x, runner.position.z)) {
+          state.swimming = true;
+          state.baseY = FLOAT_Y;
+          state.speed *= 0.3;      // you lose your momentum hitting the water
+          state.crouch = 0;
+        }
       }
       state.distance += Math.abs(state.speed) * dt;
 
       animateRunner(dt);
+      updateActors(dt);
+      waterTime += dt;
+      updateWater(waterTime);
+      drawMinimap();
       updateSun();
       updateFlag(flag, dt);
       updateBullets(dt);
@@ -3304,6 +5809,65 @@
     const _muzzle = new THREE.Vector3();
     const _aim = new THREE.Vector3();
     const _dir = new THREE.Vector3();
+    const _targetPos = new THREE.Vector3();
+    const _shotDir = new THREE.Vector3();
+
+    function segmentSphereHit(ox, oy, oz, dx, dy, dz, maxDist, cx, cy, cz, radius) {
+      const lx = ox - cx;
+      const ly = oy - cy;
+      const lz = oz - cz;
+      const b = lx * dx + ly * dy + lz * dz;
+      const c = lx * lx + ly * ly + lz * lz - radius * radius;
+      const disc = b * b - c;
+      if (disc < 0) return -1;
+      const t = -b - Math.sqrt(disc);
+      return t >= 0 && t <= maxDist ? t : -1;
+    }
+
+    function damageActor(actor, amount) {
+      if (!actor || !actor.alive) return;
+      actor.health -= amount;
+      if (actor === playerActor || actor.squad === playerSquad) damageFlash = 0.45;
+      actor.retreatTimer = actor.health < SOLDIER_HEALTH * 0.65 ? 4.0 : Math.max(actor.retreatTimer, 1.6);
+      updateHealthBar(actor);
+      if (actor.health > 0) return;
+      actor.alive = false;
+      actor.health = 0;
+      actor.state.speed = 0;
+      updateHealthBar(actor);
+      actor.unit.traverse((node) => {
+        if (node.isMesh && node.material && node.material.color) node.material.color.multiplyScalar(0.45);
+      });
+    }
+
+    function fireFromActor(actor, target = null) {
+      if (!actor.alive) return;
+      if (target === playerActor && actor.team.startsWith("enemy") && elapsedGameSeconds < PLAYER_GRACE_SECONDS) return;
+      if (target && target.alive && !hasLineOfSight(actor, target)) return;
+      reactToEnemyFire(actor, target);
+      actor.unit.userData.rifle.userData.muzzlePoint.getWorldPosition(_muzzle);
+      if (target && target.alive) {
+        _targetPos.set(target.unit.position.x, target.unit.position.y + SOLDIER_EYE_Y, target.unit.position.z);
+        _shotDir.copy(_targetPos).sub(_muzzle).normalize();
+      } else {
+        _shotDir.set(Math.sin(actor.state.heading), 0, Math.cos(actor.state.heading)).normalize();
+        _targetPos.copy(_muzzle).addScaledVector(_shotDir, ZERO_RANGE);
+      }
+      const movingSpread = Math.min(1, Math.abs(actor.state.speed) / AI_MOVE_SPEED) * AI_MOVING_AIM_SPREAD;
+      const woundedSpread = (1 - THREE.MathUtils.clamp(actor.health / SOLDIER_HEALTH, 0, 1)) * AI_WOUNDED_AIM_SPREAD;
+      const spread = AI_BASE_AIM_SPREAD + movingSpread + woundedSpread;
+      _shotDir.x += rand(-spread, spread);
+      _shotDir.y += rand(-spread * 0.55, spread * 0.55);
+      _shotDir.z += rand(-spread, spread);
+      _shotDir.normalize();
+      _targetPos.copy(_muzzle).addScaledVector(_shotDir, ZERO_RANGE);
+
+      const tracer = new THREE.Mesh(tracerGeo, tracerMat);
+      tracer.position.copy(_muzzle).addScaledVector(_shotDir, TRACER_LENGTH / 2);
+      tracer.lookAt(_targetPos);
+      scene.add(tracer);
+      bullets.push({ mesh: tracer, dir: _shotDir.clone(), travelled: 0, owner: actor });
+    }
 
     function fire() {
       if (fireCooldown > 0) return;
@@ -3322,7 +5886,7 @@
       tracer.position.copy(_muzzle).addScaledVector(dir, TRACER_LENGTH / 2);
       tracer.lookAt(_aim); // box's long axis is +Z, so this aligns the streak
       scene.add(tracer);
-      bullets.push({ mesh: tracer, dir, travelled: 0 });
+      bullets.push({ mesh: tracer, dir, travelled: 0, owner: playerActor });
     }
 
     const puffGeo = new THREE.SphereGeometry(0.16, 8, 6);
@@ -3346,9 +5910,27 @@
         const b = bullets[i];
         const p = b.mesh.position;
         // Sweep the whole frame's travel against the world before moving.
-        const t = segmentHit(p.x, p.y, p.z, b.dir.x, b.dir.y, b.dir.z, step);
-        if (t >= 0) {
-          spawnPuff(p.x + b.dir.x * t, p.y + b.dir.y * t, p.z + b.dir.z * t);
+        let hitT = segmentHit(p.x, p.y, p.z, b.dir.x, b.dir.y, b.dir.z, step);
+        let hitActor = null;
+        for (const actor of actors) {
+          if (!actor.alive || actor === b.owner || sameSide(actor, b.owner)) continue;
+          const t = segmentSphereHit(
+            p.x, p.y, p.z,
+            b.dir.x, b.dir.y, b.dir.z,
+            step,
+            actor.unit.position.x,
+            actor.unit.position.y + SOLDIER_EYE_Y,
+            actor.unit.position.z,
+            SOLDIER_RADIUS
+          );
+          if (t >= 0 && (hitT < 0 || t < hitT)) {
+            hitT = t;
+            hitActor = actor;
+          }
+        }
+        if (hitT >= 0) {
+          spawnPuff(p.x + b.dir.x * hitT, p.y + b.dir.y * hitT, p.z + b.dir.z * hitT);
+          if (hitActor) damageActor(hitActor, SOLDIER_DAMAGE);
           scene.remove(b.mesh);
           bullets.splice(i, 1);
           continue;
@@ -3415,17 +5997,231 @@
     const speedEl = document.getElementById("speed");
     const modeEl = document.getElementById("mode");
     const distanceEl = document.getElementById("distance");
+    const timeEl = document.getElementById("time");
     const staminaFill = document.getElementById("staminaFill");
+    const ordersEl = document.getElementById("orders");
+    const playerHealthFill = document.getElementById("playerHealthFill");
+    const battleStatusEl = document.getElementById("battleStatus");
+    const forceStatusEl = document.getElementById("forceStatus");
+    const hudCache = { speed: "", distance: "", mode: "", time: "", staminaWidth: "", staminaLow: null, order: "", playerHealthWidth: "", playerHealthBand: "", battle: "", force: "" };
 
     function updateHud(sprinting) {
-      speedEl.textContent = Math.abs(state.speed).toFixed(2);
-      distanceEl.textContent = state.distance.toFixed(1);
+      const speed = Math.abs(state.speed).toFixed(2);
+      const distance = state.distance.toFixed(1);
       const speedAbs = Math.abs(state.speed);
-      modeEl.textContent = speedAbs < 0.08 ? "Idle" : sprinting ? "Sprint" : state.speed < 0 ? "Back" : "March";
-      staminaFill.style.width = `${THREE.MathUtils.clamp(state.stamina / SPRINT_SECONDS, 0, 1) * 100}%`;
-      staminaFill.style.background = state.stamina < 1.2
-        ? "linear-gradient(90deg, var(--red), var(--gold))"
-        : "linear-gradient(90deg, var(--green), var(--gold))";
+      const mode = !playerActor.alive ? "Down" : speedAbs < 0.08 ? "Idle" : sprinting ? "Sprint" : state.speed < 0 ? "Back" : "March";
+      const time = `${formatGameTime()} \u00d7${TIME_SPEEDS[timeSpeedIndex]}`;
+      const staminaWidth = `${THREE.MathUtils.clamp(state.stamina / SPRINT_SECONDS, 0, 1) * 100}%`;
+      const staminaLow = state.stamina < 1.2;
+      const order = squadOrderMode === "formation"
+        ? "Formation"
+        : squadOrderMode === "meet"
+          ? "Meet Point"
+          : squadOrderMode === "auto-break"
+            ? "Taking Fire"
+            : "Break Off";
+      const ownAlive = playerSquad.members.filter((actor) => actor.alive).length;
+      const alliedAlive = actors.filter((actor) => actor.alive && !actor.team.startsWith("enemy")).length;
+      const enemyAlive = actors.filter((actor) => actor.alive && actor.team.startsWith("enemy")).length;
+      const force = `Your force: ${ownAlive}/5 alive | Allies: ${alliedAlive} | Enemies: ${enemyAlive}`;
+      const playerHealthPct = THREE.MathUtils.clamp(playerActor.health / SOLDIER_HEALTH, 0, 1);
+      const playerHealthWidth = `${playerHealthPct * 100}%`;
+      const playerHealthBand = playerHealthPct > 0.55 ? "high" : playerHealthPct > 0.25 ? "mid" : "low";
+      const battle = victoryMessage
+        || (landmarkAlerts.ally > 0
+          ? "Alert: enemies inside the Church grounds"
+          : landmarkAlerts.enemy > 0
+            ? `Town Hall capture: ${Math.floor(captureProgress.ally)} / ${LANDMARK_CAPTURE_SECONDS}s`
+            : `Town Hall capture: ${Math.floor(captureProgress.ally)} / ${LANDMARK_CAPTURE_SECONDS}s`);
+
+      // DOM writes can force style work. Only change a value when its rendered
+      // text or CSS value actually differs, so the HUD remains visually exact.
+      if (hudCache.speed !== speed) {
+        speedEl.textContent = speed;
+        hudCache.speed = speed;
+      }
+      if (hudCache.distance !== distance) {
+        distanceEl.textContent = distance;
+        hudCache.distance = distance;
+      }
+      if (hudCache.mode !== mode) {
+        modeEl.textContent = mode;
+        hudCache.mode = mode;
+      }
+      if (hudCache.time !== time) {
+        timeEl.textContent = time;
+        hudCache.time = time;
+      }
+      if (hudCache.staminaWidth !== staminaWidth) {
+        staminaFill.style.width = staminaWidth;
+        hudCache.staminaWidth = staminaWidth;
+      }
+      if (hudCache.staminaLow !== staminaLow) {
+        staminaFill.style.background = staminaLow
+          ? "linear-gradient(90deg, var(--red), var(--gold))"
+          : "linear-gradient(90deg, var(--green), var(--gold))";
+        hudCache.staminaLow = staminaLow;
+      }
+      if (hudCache.order !== order) {
+        ordersEl.textContent = order;
+        hudCache.order = order;
+      }
+      if (hudCache.playerHealthWidth !== playerHealthWidth) {
+        playerHealthFill.style.width = playerHealthWidth;
+        hudCache.playerHealthWidth = playerHealthWidth;
+      }
+      if (hudCache.playerHealthBand !== playerHealthBand) {
+        playerHealthFill.style.background = playerHealthBand === "high"
+          ? "linear-gradient(90deg, var(--green), var(--gold))"
+          : playerHealthBand === "mid"
+            ? "linear-gradient(90deg, var(--gold), #f59e0b)"
+            : "linear-gradient(90deg, var(--red), var(--gold))";
+        hudCache.playerHealthBand = playerHealthBand;
+      }
+      if (hudCache.battle !== battle) {
+        battleStatusEl.textContent = battle;
+        hudCache.battle = battle;
+      }
+      if (hudCache.force !== force) {
+        forceStatusEl.textContent = force;
+        hudCache.force = force;
+      }
+    }
+
+    // --- Minimap -------------------------------------------------------------
+    // The static layer is drawn once from the same layout data as the meshes;
+    // only the player marker is redrawn per frame.
+    const mapCanvas = document.getElementById("minimap");
+    const mctx = mapCanvas.getContext("2d");
+    const MAP_PX = mapCanvas.width;
+    const MAP_HALF = 220;
+    const toPx = (v) => ((v + MAP_HALF) / (MAP_HALF * 2)) * MAP_PX;
+    const mScale = MAP_PX / (MAP_HALF * 2);
+
+    const staticMap = document.createElement("canvas");
+    staticMap.width = MAP_PX;
+    staticMap.height = MAP_PX;
+    const MAP_LANDMARKS = [
+      { name: "Church", x: CHURCH_X, z: CHURCH_Z, dx: -7, dy: -8, align: "right" },
+      { name: "School", x: SCHOOL_X, z: SCHOOL_Z, dx: -7, dy: 10, align: "right" },
+      { name: "Town Hall", x: TOWN_HALL_X, z: TOWN_HALL_Z, dx: 0, dy: -8, align: "center" },
+      { name: "Water Tower", x: -34, z: 145, dx: 0, dy: 11, align: "center" },
+      { name: "Warehouse", x: -121, z: 26, dx: 0, dy: -8, align: "center" },
+      { name: "Warehouse", x: 121, z: -26, dx: 0, dy: 11, align: "center" },
+      { name: "School", x: 137.5, z: -44, dx: 0, dy: 11, align: "center" }
+    ];
+
+    function drawMapLabel(c, landmark) {
+      const x = toPx(landmark.x);
+      const z = toPx(landmark.z);
+      c.fillStyle = "#ffe4a3";
+      c.strokeStyle = "rgba(10,13,16,0.85)";
+      c.lineWidth = 2.4;
+      c.font = "700 7px system-ui, sans-serif";
+      c.textAlign = landmark.align;
+      c.textBaseline = "middle";
+      c.strokeText(landmark.name, x + landmark.dx, z + landmark.dy);
+      c.fillText(landmark.name, x + landmark.dx, z + landmark.dy);
+      c.fillStyle = "#ffe14d";
+      c.beginPath();
+      c.arc(x, z, 1.8, 0, Math.PI * 2);
+      c.fill();
+    }
+
+    (function drawStaticMap() {
+      const c = staticMap.getContext("2d");
+      c.fillStyle = "#33502a";
+      c.fillRect(0, 0, MAP_PX, MAP_PX);
+      for (const r of roads) {
+        c.fillStyle = r.kind === "quay" ? "#7d776f" : "#635e58";
+        c.fillRect(toPx(r.x - r.w / 2), toPx(r.z - r.d / 2), r.w * mScale, r.d * mScale);
+      }
+      // River drawn after the roads so nothing appears to cross it but bridges.
+      c.fillStyle = "#22505c";
+      c.fillRect(0, toPx(CANAL_Z - CANAL_W / 2), MAP_PX, CANAL_W * mScale);
+      c.fillStyle = "#8a6a3c";
+      for (const bx of BRIDGE_XS) {
+        c.fillRect(
+          toPx(bx - BRIDGE_W / 2), toPx(CANAL_Z - CANAL_W / 2 - 1.4),
+          BRIDGE_W * mScale, (CANAL_W + 2.8) * mScale
+        );
+      }
+      // One solid footprint per placed model keeps every building legible at
+      // minimap scale, including models whose in-game collision uses wall gaps.
+      for (const building of minimapStructures) {
+        const x = toPx(building.minX);
+        const z = toPx(building.minZ);
+        const w = (building.maxX - building.minX) * mScale;
+        const d = (building.maxZ - building.minZ) * mScale;
+        c.fillStyle = building.maxY >= 13
+          ? "#837448"
+          : building.maxY >= 8
+            ? "#625a50"
+            : "#4b4741";
+        c.fillRect(x, z, w, d);
+        if (w > 1.8 && d > 1.8) {
+          c.strokeStyle = "rgba(220,211,181,0.34)";
+          c.lineWidth = 0.55;
+          c.strokeRect(x + 0.25, z + 0.25, Math.max(0, w - 0.5), Math.max(0, d - 0.5));
+        }
+      }
+      // Sandbags are tactical blocks rather than buildings, so keep their map
+      // marker bright and distinct from the surrounding house footprints.
+      for (const wall of minimapSandbagWalls) {
+        const x = toPx(wall.x - wall.w / 2);
+        const z = toPx(wall.z - wall.d / 2);
+        const w = wall.w * mScale;
+        const d = wall.d * mScale;
+        c.fillStyle = "#d5bd73";
+        c.fillRect(x, z, w, d);
+        c.strokeStyle = "#3a2f1b";
+        c.lineWidth = 0.75;
+        c.strokeRect(x, z, w, d);
+      }
+      c.fillStyle = "rgba(255,242,200,0.85)";
+      for (const j of junctions) {
+        c.beginPath();
+        c.arc(toPx(j.x), toPx(j.z), 1.8, 0, Math.PI * 2);
+        c.fill();
+      }
+      c.strokeStyle = "rgba(255,255,255,0.25)";
+      c.lineWidth = 1;
+      c.strokeRect(0.5, 0.5, MAP_PX - 1, MAP_PX - 1);
+      for (const landmark of MAP_LANDMARKS) drawMapLabel(c, landmark);
+    })();
+
+    function drawMinimap() {
+      mctx.clearRect(0, 0, MAP_PX, MAP_PX);
+      mctx.drawImage(staticMap, 0, 0);
+      for (const actor of actors) {
+        if (!actor.alive || actor === playerActor || actor.squad !== playerSquad) continue;
+        const ax = toPx(actor.unit.position.x);
+        const az = toPx(actor.unit.position.z);
+        mctx.fillStyle = "#70b7ff";
+        mctx.beginPath();
+        mctx.arc(ax, az, 2.4, 0, Math.PI * 2);
+        mctx.fill();
+      }
+      const px = toPx(runner.position.x);
+      const pz = toPx(runner.position.z);
+      mctx.save();
+      mctx.translate(px, pz);
+      mctx.rotate(-state.heading + Math.PI);
+      mctx.fillStyle = state.swimming ? "#6fd2ff" : "#ffe14d";
+      mctx.strokeStyle = "rgba(0,0,0,0.6)";
+      mctx.lineWidth = 1;
+      mctx.beginPath();
+      mctx.moveTo(0, -6);
+      mctx.lineTo(4, 5);
+      mctx.lineTo(0, 2.5);
+      mctx.lineTo(-4, 5);
+      mctx.closePath();
+      mctx.fill();
+      mctx.stroke();
+      mctx.restore();
+      mctx.fillStyle = "rgba(255,255,255,0.6)";
+      mctx.font = "10px sans-serif";
+      mctx.fillText("N", MAP_PX / 2 - 3, 11);
     }
 
     const clock = new THREE.Clock();
@@ -3433,10 +6229,12 @@
       requestAnimationFrame(loop);
       const dt = Math.min(clock.getDelta(), 0.033);
       update(dt);
+      updateCombatUi(dt);
       renderer.render(scene, camera);
     }
 
     updateHud(false);
+    updateCombatUi(0);
     loop();
   </script>
 </body>
